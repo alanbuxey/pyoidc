@@ -1,20 +1,23 @@
 import time
+from typing import List  # noqa
+from typing import Optional  # noqa
 
 from oic.oauth2.message import AccessTokenResponse
 from oic.oauth2.message import AuthorizationResponse
 from oic.utils.time_util import utc_time_sans_frac
 
-__author__ = 'roland'
+__author__ = "roland"
 
 
 class Token(object):
     def __init__(self, resp=None):
-        self.scope = []
+        self.scope = []  # type: List[str]
         self.token_expiration_time = 0
         self.access_token = None
         self.refresh_token = None
-        self.token_type = None
+        self.token_type = None  # type: Optional[str]
         self.replaced = False
+        self.id_token = None
 
         if resp:
             for prop, val in resp.items():
@@ -66,9 +69,9 @@ class Grant(object):
         self.grant_expiration_time = 0
         self.exp_in = exp_in
         self.seed = seed
-        self.tokens = []
+        self.tokens = []  # type: List[Token]
         self.id_token = None
-        self.code = None
+        self.code = None  # type: Optional[str]
         if resp:
             self.add_code(resp)
             self.add_token(resp)
@@ -88,9 +91,10 @@ class Grant(object):
 
     def add_token(self, resp):
         """
+        Add token to store.
+
         :param resp: An Authorization Response instance
         """
-
         if "access_token" in resp:
             tok = self._token_class(resp)
             self.tokens.append(tok)
@@ -130,6 +134,13 @@ class Grant(object):
                     return token
 
         return token
+
+    def delete_token(self, token):
+        """Remove the specified token if it exists."""
+        try:
+            self.tokens.remove(token)
+        except ValueError:
+            pass
 
     def get_id_token(self):
         if self.id_token:

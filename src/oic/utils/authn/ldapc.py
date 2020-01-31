@@ -1,4 +1,7 @@
-import ldap
+try:
+    import ldap
+except ImportError:
+    raise ImportError("This module can be used only with pyldap installed.")
 
 from oic.exception import PyoidcError
 from oic.utils.authn.user import UsernamePasswordMako
@@ -6,7 +9,7 @@ from oic.utils.authn.user import UsernamePasswordMako
 SCOPE_MAP = {
     "base": ldap.SCOPE_BASE,
     "onelevel": ldap.SCOPE_ONELEVEL,
-    "subtree": ldap.SCOPE_SUBTREE
+    "subtree": ldap.SCOPE_SUBTREE,
 }
 
 
@@ -15,10 +18,21 @@ class LDAPCError(PyoidcError):
 
 
 class LDAPAuthn(UsernamePasswordMako):
-    def __init__(self, srv, ldapsrv, return_to, pattern, mako_template,
-                 template_lookup, ldap_user="", ldap_pwd="",
-                 verification_endpoints=["verify"]):
+    def __init__(  # nosec
+        self,
+        srv,
+        ldapsrv,
+        return_to,
+        pattern,
+        mako_template,
+        template_lookup,
+        ldap_user="",
+        ldap_pwd="",
+        verification_endpoints=["verify"],
+    ):
         """
+        Authenticate user against LDAP.
+
         :param srv: The server instance
         :param ldapsrv: Which LDAP server to us
         :param return_to: Where to send the user after authentication
@@ -33,8 +47,14 @@ class LDAPAuthn(UsernamePasswordMako):
         :param ldap_pwd: The password for the ldap_user
         """
         UsernamePasswordMako.__init__(
-            self, srv, mako_template, template_lookup, None, return_to,
-            verification_endpoints=verification_endpoints)
+            self,
+            srv,
+            mako_template,
+            template_lookup,
+            None,
+            return_to,
+            verification_endpoints=verification_endpoints,
+        )
 
         self.ldap = ldap.initialize(ldapsrv)
         self.ldap.protocol_version = 3
@@ -45,7 +65,8 @@ class LDAPAuthn(UsernamePasswordMako):
 
     def _verify(self, pwd, user):
         """
-        Verifies the username and password against a LDAP server
+        Verify the username and password against a LDAP server.
+
         :param pwd: The password
         :param user: The username
         :return: AssertionError if the LDAP verification failed.
@@ -58,7 +79,8 @@ class LDAPAuthn(UsernamePasswordMako):
             else:
                 args = {
                     "filterstr": self.pattern["filterstr"] % user,
-                    "base": self.pattern["base"]}
+                    "base": self.pattern["base"],
+                }
                 if "scope" not in args:
                     args["scope"] = ldap.SCOPE_SUBTREE
                 else:

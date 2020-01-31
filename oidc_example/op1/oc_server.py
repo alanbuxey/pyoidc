@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 import json
 import os
 import re
@@ -145,12 +144,15 @@ def safe(environ, start_response, logger):
 
     try:
         authz = environ["HTTP_AUTHORIZATION"]
-        (typ, code) = authz.split(" ")
-        assert typ == "Bearer"
+        typ, code = authz.split(" ")
     except KeyError:
         resp = BadRequest("Missing authorization information")
         return resp(environ, start_response)
-
+    else:
+        if typ != "Bearer":
+            resp = BadRequest("Unsupported authorization method")
+            return resp(environ, start_response)
+            
     try:
         _sinfo = _srv.sdb[code]
     except KeyError:
@@ -270,13 +272,16 @@ def meta_info(environ, start_response, logger):
 def webfinger(environ, start_response, _):
     query = parse_qs(environ["QUERY_STRING"])
     try:
-        assert query["rel"] == [OIC_ISSUER]
+        rel = query["rel"]
         resource = query["resource"][0]
     except KeyError:
         resp = BadRequest("Missing parameter in request")
     else:
-        wf = WebFinger()
-        resp = Response(wf.response(subject=resource, base=OAS.baseurl))
+        if rel != [OIC_ISSUER]:
+            resp = BadRequest("Bad issuer in request")
+        else:
+            wf = WebFinger()
+            resp = Response(wf.response(subject=resource, base=OAS.baseurl))
     return resp(environ, start_response)
 
 
@@ -421,9 +426,9 @@ def application(environ, start_response):
 class TestProvider(Provider):
     #noinspection PyUnusedLocal
     def __init__(self, name, sdb, cdb, function, userdb, urlmap=None,
-                 debug=0, ca_certs="", jwt_keys=None):
+                 debug=0, jwt_keys=None):
         Provider.__init__(self, name, sdb, cdb, function, userdb, urlmap,
-                          ca_certs, jwt_keys)
+                          jwt_keys)
         self.test_mode = True
         self.trace_log = {}
         self.sessions = []
@@ -585,7 +590,7 @@ if __name__ == '__main__':
         endpoints = ENDPOINTS
 
     add_endpoints(endpoints)
-    OAS.endpoints = endpoints
+    OAS.endp = endpoints
 
     if args.port == 80:
         OAS.baseurl = config.baseurl
@@ -624,7 +629,7 @@ if __name__ == '__main__':
 
     LOGGER.debug("URLS: '%s" % (URLS,))
     # Add the claims providers keys
-    SRV = wsgiserver.CherryPyWSGIServer(('0.0.0.0', args.port), application)
+    SRV = wsgiserver.CherryPyWSGIServer(('0.0.0.0', args.port), application) # nosec
 
     SRV.ssl_adapter = ssl_pyopenssl.pyOpenSSLAdapter(config.SERVER_CERT,
                                                      config.SERVER_KEY,

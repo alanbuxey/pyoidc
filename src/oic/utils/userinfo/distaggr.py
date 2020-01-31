@@ -1,5 +1,8 @@
 import copy
 import logging
+from typing import Any  # noqa
+from typing import Dict  # noqa
+from typing import List  # noqa
 
 from oic.exception import MissingAttribute
 from oic.oic import OpenIDSchema
@@ -7,7 +10,7 @@ from oic.oic.claims_provider import ClaimsClient
 from oic.utils.sanitize import sanitize
 from oic.utils.userinfo import UserInfo
 
-__author__ = 'rolandh'
+__author__ = "rolandh"
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +21,7 @@ class DistributedAggregatedUserInfo(UserInfo):
         self.oidcsrv = oidcsrv
         self.claims_clients = self.init_claims_clients(client_info)
 
-        for key, cc in self.claims_clients.items():
+        for _, cc in self.claims_clients.items():
             oidcsrv.keyjar.update(cc.keyjar)
 
     def dynamic_init_claims_client(self, issuer, req_args):
@@ -31,7 +34,7 @@ class DistributedAggregatedUserInfo(UserInfo):
         return cc
 
     def init_claims_clients(self, client_info):
-        res = {}
+        res = {}  # type: Dict[str, ClaimsClient]
         if client_info is None:
             return res
 
@@ -52,12 +55,11 @@ class DistributedAggregatedUserInfo(UserInfo):
     def _collect_distributed(self, srv, cc, sub, what, alias=""):
 
         try:
-            resp = cc.do_claims_request(request_args={"sub": sub,
-                                                      "claims_names": what})
+            resp = cc.do_claims_request(request_args={"sub": sub, "claims_names": what})
         except Exception:
             raise
 
-        result = {"_claims_names": {}, "_claims_sources": {}}
+        result = {"_claims_names": {}, "_claims_sources": {}}  # type: Dict[str, Any]
 
         if not alias:
             alias = srv
@@ -70,18 +72,18 @@ class DistributedAggregatedUserInfo(UserInfo):
         else:
             result["_claims_sources"][alias] = {"endpoint": resp["endpoint"]}
             if "access_token" in resp:
-                result["_claims_sources"][alias]["access_token"] = resp[
-                    "access_token"]
+                result["_claims_sources"][alias]["access_token"] = resp["access_token"]
 
         return result
 
     def __call__(self, userid, client_id, user_info_claims=None, **kwargs):
         """
+        Collect the claims.
+
         :param userid: The local user id
         :param user_info_claims: Possible userinfo claims (a dictionary)
         :return: A schema dependent userinfo instance
         """
-
         logger.info("User_info about '%s'" % userid)
         identity = copy.copy(self.db[userid])
 
@@ -101,7 +103,7 @@ class DistributedAggregatedUserInfo(UserInfo):
 
             # Check if anything asked for is somewhere else
             if (missing or optional) and "_external_" in identity:
-                cpoints = {}
+                cpoints = {}  # type: Dict[str, List[str]]
                 remaining = missing[:]
                 missing.extend(optional)
                 for key in missing:
@@ -117,13 +119,11 @@ class DistributedAggregatedUserInfo(UserInfo):
                                 pass
 
                 if remaining:
-                    raise MissingAttribute(
-                        "Missing properties '%s'" % remaining)
+                    raise MissingAttribute("Missing properties '%s'" % remaining)
 
                 for srv, what in cpoints.items():
                     cc = self.oidcsrv.claims_clients[srv]
-                    logger.debug("srv: %s, what: %s" % (sanitize(srv),
-                                                        sanitize(what)))
+                    logger.debug("srv: %s, what: %s" % (sanitize(srv), sanitize(what)))
                     _res = self._collect_distributed(srv, cc, userid, what)
                     logger.debug("Got: %s" % sanitize(_res))
                     for key, val in _res.items():
@@ -134,7 +134,6 @@ class DistributedAggregatedUserInfo(UserInfo):
 
         else:
             # default is what "openid" demands which is sub
-            # result = identity
             result = {"sub": userid}
 
         return OpenIDSchema(**result)

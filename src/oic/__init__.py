@@ -3,43 +3,53 @@ import string
 
 # Since SystemRandom is not available on all systems
 try:
-    import random.SystemRandom as rnd
+    # Python 3.6+, designed for this usecase
+    from secrets import choice
 except ImportError:
-    import random as rnd
+    import random
 
-__author__ = 'Roland Hedberg'
-__version__ = '0.12.0'
+    try:
+        # Python 2.4+ if available on the platform
+        _sysrand = random.SystemRandom()
+        choice = _sysrand.choice
+    except AttributeError:
+        # Fallback, really bad
+        import warnings
+
+        choice = random.choice
+        warnings.warn(
+            "No good random number generator available on this platform. "
+            "Security tokens will be weak and guessable.",
+            RuntimeWarning,
+        )
+
+__author__ = "Roland Hedberg"
+__version__ = "1.1.2"
 
 
 OIDCONF_PATTERN = "%s/.well-known/openid-configuration"
-CC_METHOD = {
-    'S256': hashlib.sha256,
-    'S384': hashlib.sha384,
-    'S512': hashlib.sha512,
-}
+CC_METHOD = {"S256": hashlib.sha256, "S384": hashlib.sha384, "S512": hashlib.sha512}
 
 
 def rndstr(size=16):
     """
-    Returns a string of random ascii characters or digits
+    Return a string of random ascii characters or digits.
 
     :param size: The length of the string
     :return: string
     """
     _basech = string.ascii_letters + string.digits
-    return "".join([rnd.choice(_basech) for _ in range(size)])
+    return "".join([choice(_basech) for _ in range(size)])
 
 
-BASECH = string.ascii_letters + string.digits + '-._~'
+BASECH = string.ascii_letters + string.digits + "-._~"
 
 
 def unreserved(size=64):
     """
-    Returns a string of random ascii characters, digits and unreserved
-    characters
+    Return a string of random ascii characters, digits and unreserved characters for use as RFC 7636 code verifiers.
 
     :param size: The length of the string
     :return: string
     """
-
-    return "".join([rnd.choice(BASECH) for _ in range(size)])
+    return "".join([choice(BASECH) for _ in range(size)])

@@ -1,9 +1,13 @@
-#!/usr/bin/env python
 import logging
 import os.path
+import warnings
+from typing import Dict
+from typing import Optional
 
 from oic import rndstr
 from oic.exception import AuthzError
+from oic.exception import MessageException
+from oic.exception import NotForMe
 from oic.exception import PyoidcError
 from oic.oauth2 import Grant
 from oic.oauth2.consumer import TokenError
@@ -15,19 +19,25 @@ from oic.oic import Client
 from oic.oic.message import AccessTokenResponse
 from oic.oic.message import AuthorizationRequest
 from oic.oic.message import AuthorizationResponse
+from oic.oic.message import BackChannelLogoutRequest
 from oic.oic.message import Claims
 from oic.oic.message import ClaimsRequest
 from oic.utils import http_util
 from oic.utils.sanitize import sanitize
+from oic.utils.sdb import DictSessionBackend
+from oic.utils.sdb import SessionBackend
+from oic.utils.sdb import session_extended_get
+from oic.utils.sdb import session_get
+from oic.utils.sdb import session_update
 
-__author__ = 'rohe0002'
+__author__ = "rohe0002"
 
 logger = logging.getLogger(__name__)
 
 
 def factory(kaka, sdb, config):
     """
-    Return the right Consumer instance dependent on what's in the cookie
+    Return the right Consumer instance dependent on what's in the cookie.
 
     :param kaka: The cookie
     :param sdb: The session database
@@ -38,7 +48,7 @@ def factory(kaka, sdb, config):
     if part is None:
         return None
 
-    cons = Consumer(sdb, config=config)
+    cons = Consumer(sdb, config)
     cons.restore(part[0])
     http_util.parse_cookie(config["name"], cons.seed, kaka)
     return cons
@@ -46,6 +56,8 @@ def factory(kaka, sdb, config):
 
 def build_userinfo_claims(claims, sformat="signed", locale="us-en"):
     """
+    Create userinfo request based on claims.
+
     config example::
 
         "userinfo":{
@@ -61,7 +73,7 @@ def build_userinfo_claims(claims, sformat="signed", locale="us-en"):
 
 def clean_response(aresp):
     """
-    Creates a new instance with only the standard attributes
+    Create a new instance with only the standard attributes.
 
     :param aresp: The original AccessTokenResponse
     :return: An AccessTokenResponse instance
@@ -76,7 +88,16 @@ def clean_response(aresp):
     return atr
 
 
-IGNORE = ["request2endpoint", "response2error", "grant_class", "token_class"]
+IGNORE = [
+    "request2endpoint",
+    "response2error",
+    "grant_class",
+    "token_class",
+    "sdb",
+    "wf",
+    "events",
+    "message_factory",
+]
 
 CONSUMER_PREF_ARGS = [
     "token_endpoint_auth_method",
@@ -95,17 +116,25 @@ CONSUMER_PREF_ARGS = [
     "request_object_encryption_enc",
     "default_max_age",
     "require_auth_time",
-    "default_acr_values"
+    "default_acr_values",
 ]
 
 
 class Consumer(Client):
-    """ An OpenID Connect consumer implementation
+    """An OpenID Connect consumer implementation."""
 
-    """
-    def __init__(self, session_db, consumer_config, client_config=None,
-                 server_info=None, debug=False, client_prefs=None):
-        """ Initializes a Consumer instance.
+    def __init__(
+        self,
+        session_db,
+        consumer_config,
+        client_config=None,
+        server_info=None,
+        debug=False,
+        client_prefs=None,
+        sso_db=None,
+    ):
+        """
+        Initialize a Consumer instance.
 
         :param session_db: Where info are kept about sessions
         :param config: Configuration of the consumer
@@ -133,7 +162,23 @@ class Consumer(Client):
                 except KeyError:
                     setattr(self, endpoint, "")
 
+        if not isinstance(session_db, SessionBackend):
+            warnings.warn(
+                "Please use `SessionBackend` to ensure proper API for the database.",
+                DeprecationWarning,
+            )
         self.sdb = session_db
+
+        if sso_db is not None:
+            if not isinstance(sso_db, SessionBackend):
+                warnings.warn(
+                    "Please use `SessionBackend` to ensure proper API for the database.",
+                    DeprecationWarning,
+                )
+            self.sso_db = sso_db  # type: SessionBackend
+        else:
+            self.sso_db = DictSessionBackend()
+
         self.debug = debug
         self.seed = ""
         self.nonce = ""
@@ -144,23 +189,30 @@ class Consumer(Client):
         self.secret_type = "Bearer"
 
     def update(self, sid):
-        """ Updates the instance variables from something stored in the
-        session database. Will not overwrite something that's already there.
+        """
+        Update the instance variables from something stored in the session database.
+
+        Will not overwrite something that's already there.
         Except for the grant dictionary !!
 
         :param sid: Session identifier
         """
         for key, val in self.sdb[sid].items():
-            _val = getattr(self, key)
+            try:
+                _val = getattr(self, key)
+            except AttributeError:
+                continue
+
             if not _val and val:
                 setattr(self, key, val)
             elif key == "grant" and val:
+                # val is a Grant instance
                 val.update(_val)
                 setattr(self, key, val)
 
     def restore(self, sid):
-        """ Restores the instance variables from something stored in the
-        session database.
+        """
+        Restore the instance variables from something stored in the session database.
 
         :param sid: Session identifier
         """
@@ -168,29 +220,25 @@ class Consumer(Client):
             setattr(self, key, val)
 
     def dictionary(self):
-        return dict([(k, v) for k, v in
-                     self.__dict__.items() if k not in IGNORE])
+        return dict([(k, v) for k, v in self.__dict__.items() if k not in IGNORE])
 
     def _backup(self, sid):
-        """ Stores instance variable values in the session store under a
-        session identifier.
+        """
+        Store instance variable values in the session store under a session identifier.
 
         :param sid: Session identifier
         """
         self.sdb[sid] = self.dictionary()
 
-    def begin(self, scope="", response_type="", use_nonce=False, path="",
-              **kwargs):
-        """ Begin the OIDC flow
+    def begin(self, scope="", response_type="", use_nonce=False, path="", **kwargs):
+        """
+        Begin the OIDC flow.
 
         :param scope: Defines which user info claims is wanted
-        :param response_type: Controls the parameters returned in the
-            response from the Authorization Endpoint
-        :param use_nonce: If not implicit flow nonce is optional.
-            This defines if it should be used anyway.
+        :param response_type: Controls the parameters returned in the response from the Authorization Endpoint
+        :param use_nonce: If not implicit flow nonce is optional. This defines if it should be used anyway.
         :param path: The path part of the redirect URL
-        :return: A 2-tuple, session identifier and URL to which the user
-            should be redirected
+        :return: A 2-tuple, session identifier and URL to which the user should be redirected
         """
         _log_info = logger.info
 
@@ -223,6 +271,7 @@ class Consumer(Client):
 
         self._backup(sid)
         self.sdb["seed:%s" % self.seed] = sid
+        self.sso_db[sid] = {}
 
         args = {
             "client_id": self.client_id,
@@ -235,7 +284,7 @@ class Consumer(Client):
         # OPTIONAL on code flow.
         if "token" in response_type or use_nonce:
             args["nonce"] = rndstr(12)
-            self.state2nonce[sid] = args['nonce']
+            self.state2nonce[sid] = args["nonce"]
 
         if "max_age" in self.consumer_config:
             args["max_age"] = self.consumer_config["max_age"]
@@ -243,21 +292,23 @@ class Consumer(Client):
         _claims = None
         if "user_info" in self.consumer_config:
             _claims = ClaimsRequest(
-                userinfo=Claims(**self.consumer_config["user_info"]))
+                userinfo=Claims(**self.consumer_config["user_info"])
+            )
         if "id_token" in self.consumer_config:
             if _claims:
                 _claims["id_token"] = Claims(**self.consumer_config["id_token"])
             else:
                 _claims = ClaimsRequest(
-                    id_token=Claims(**self.consumer_config["id_token"]))
+                    id_token=Claims(**self.consumer_config["id_token"])
+                )
 
         if _claims:
             args["claims"] = _claims
 
         if "request_method" in self.consumer_config:
             areq = self.construct_AuthorizationRequest(
-                request_args=args, extra_args=None,
-                request_param="request")
+                request_args=args, extra_args=None, request_param="request"
+            )
 
             if self.consumer_config["request_method"] == "file":
                 id_request = areq["request"]
@@ -280,8 +331,9 @@ class Consumer(Client):
             if "userinfo_claims" in args:  # can only be carried in an IDRequest
                 raise PyoidcError("Need a request method")
 
-            areq = self.construct_AuthorizationRequest(AuthorizationRequest,
-                                                       request_args=args)
+            areq = self.construct_AuthorizationRequest(
+                AuthorizationRequest, request_args=args
+            )
 
         location = areq.request(self.authorization_endpoint)
 
@@ -294,13 +346,12 @@ class Consumer(Client):
         _log_info = logger.info
         # Might be an error response
         _log_info("Expect Authorization Response")
-        aresp = self.parse_response(AuthorizationResponse,
-                                    info=query,
-                                    sformat="urlencoded",
-                                    keyjar=self.keyjar)
+        aresp = self.parse_response(
+            AuthorizationResponse, info=query, sformat="urlencoded", keyjar=self.keyjar
+        )
         if isinstance(aresp, ErrorResponse):
             _log_info("ErrorResponse: %s" % sanitize(aresp))
-            raise AuthzError(aresp.get('error'), aresp)
+            raise AuthzError(aresp.get("error"), aresp)
 
         _log_info("Aresp: %s" % sanitize(aresp))
 
@@ -315,8 +366,8 @@ class Consumer(Client):
 
     def parse_authz(self, query="", **kwargs):
         """
-        This is where we get redirect back to after authorization at the
-        authorization server has happened.
+        Parse authorization response from server.
+
         Couple of cases
         ["code"]
         ["code", "token"]
@@ -327,7 +378,6 @@ class Consumer(Client):
 
         :return: A AccessTokenResponse instance
         """
-
         _log_info = logger.info
         logger.debug("- authorization -")
 
@@ -354,13 +404,22 @@ class Consumer(Client):
                 idt = aresp["id_token"]
             except KeyError:
                 idt = None
+            else:
+                try:
+                    session_update(self.sdb, idt["sid"], "smid", _state)
+                except KeyError:
+                    pass
 
             return aresp, atr, idt
         elif "token" in self.consumer_config["response_type"]:  # implicit flow
             _log_info("Expect Access Token Response")
-            atr = self.parse_response(AccessTokenResponse, info=query,
-                                      sformat="urlencoded",
-                                      keyjar=self.keyjar, **kwargs)
+            atr = self.parse_response(
+                AccessTokenResponse,
+                info=query,
+                sformat="urlencoded",
+                keyjar=self.keyjar,
+                **kwargs
+            )
             if isinstance(atr, ErrorResponse):
                 raise TokenError(atr.get("error"), atr)
 
@@ -373,11 +432,18 @@ class Consumer(Client):
                 idt = aresp["id_token"]
             except KeyError:
                 idt = None
+            else:
+                try:
+                    session_update(self.sso_db, _state, "smid", idt["sid"])
+                except KeyError:
+                    pass
+
             return None, None, idt
 
     def complete(self, state):
         """
         Do the access token request, the last step in a code flow.
+
         If Implicit flow was used then this method is never used.
         """
         args = {"redirect_uri": self.redirect_uris[0]}
@@ -387,22 +453,25 @@ class Consumer(Client):
         elif self.client_secret:
             logger.info("request_body auth")
             http_args = {}
-            args.update({"client_secret": self.client_secret,
-                         "client_id": self.client_id,
-                         "secret_type": self.secret_type})
+            args.update(
+                {
+                    "client_secret": self.client_secret,
+                    "client_id": self.client_id,
+                    "secret_type": self.secret_type,
+                }
+            )
         else:
             raise PyoidcError("Nothing to authenticate with")
 
-        resp = self.do_access_token_request(state=state,
-                                            request_args=args,
-                                            http_args=http_args)
+        resp = self.do_access_token_request(
+            state=state, request_args=args, http_args=http_args
+        )
 
         logger.info("Access Token Response: %s" % sanitize(resp))
 
         if resp.type() == "ErrorResponse":
             raise TokenError(resp.error, resp)
 
-        # self._backup(self.sdb["seed:%s" % _cli.seed])
         self._backup(state)
 
         return resp
@@ -426,6 +495,8 @@ class Consumer(Client):
 
     def check_session(self):
         """
+        Check session endpoint.
+
         With python you could use PyQuery to get the onclick attribute of each
         anchor tag, parse that with a regular expression to get the placeId,
         build the /places/duplicates.jsp?inPID= URL yourself, use requests to
@@ -444,3 +515,44 @@ class Consumer(Client):
 
     def end_session(self):
         pass
+
+    # LOGOUT related
+
+    def backchannel_logout(
+        self, request: Optional[str] = None, request_args: Optional[Dict] = None
+    ) -> str:
+        """
+        Receives a back channel logout request.
+
+        :param request: A urlencoded request
+        :param request_args: The request as a dictionary
+        :return: A Session Identifier
+        """
+        if request:
+            req = BackChannelLogoutRequest().from_urlencoded(request)
+        elif request_args is not None:
+            req = BackChannelLogoutRequest(**request_args)
+        else:
+            raise ValueError("Missing request specification")
+
+        kwargs = {"aud": self.client_id, "iss": self.issuer, "keyjar": self.keyjar}
+
+        try:
+            req.verify(**kwargs)
+        except (MessageException, ValueError, NotForMe) as err:
+            raise MessageException("Bogus logout request: {}".format(err))
+
+        # Find the subject through 'sid' or 'sub'
+
+        try:
+            sub = req["logout_token"]["sub"]
+        except KeyError:
+            # verify has guaranteed that there will be a sid if sub is missing
+            sm_id = req["logout_token"]["sid"]
+            _sid = session_get(self.sso_db, "smid", sm_id)
+        else:
+            _sid = session_extended_get(
+                self.sso_db, sub, "issuer", req["logout_token"]["iss"]
+            )
+
+        return _sid

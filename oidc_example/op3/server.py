@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 __author__ = 'Vahid Jalili'
 
-from future.backports.urllib.parse import parse_qs
+from urllib.parse import parse_qs
 
 import json
 import os
@@ -10,6 +10,8 @@ import sys
 import traceback
 import argparse
 import importlib
+import logging
+
 from mako.lookup import TemplateLookup
 
 from oic import rndstr
@@ -126,7 +128,7 @@ class Application(object):
             EndSessionEndpoint(self.endsession),
         ]
 
-        self.provider.endpoints = self.endpoints
+        self.provider.endp = self.endpoints
         self.urls = urls
         self.urls.extend([
             (r'^.well-known/openid-configuration', self.op_info),
@@ -152,10 +154,13 @@ class Application(object):
         try:
             authz = environ["HTTP_AUTHORIZATION"]
             (typ, code) = authz.split(" ")
-            assert typ == "Bearer"
         except KeyError:
             resp = BadRequest("Missing authorization information")
             return resp(environ, start_response)
+        else:
+           if typ != "Bearer":
+               resp = BadRequest("Unsupported authorization method")
+               return resp(environ, start_response)
 
         try:
             _sinfo = _srv.sdb[code]
@@ -243,20 +248,23 @@ class Application(object):
              ]}
 
         """
-        print '\n in meta-info'
+        print('\n in meta-info')
         pass
 
     def webfinger(self, environ, start_response):
         query = parse_qs(environ["QUERY_STRING"])
         try:
-            assert query["rel"] == [OIC_ISSUER]
+            rel = query["rel"]
             resource = query["resource"][0]
         except KeyError:
             resp = BadRequest("Missing parameter in request")
         else:
-            wf = WebFinger()
-            resp = Response(wf.response(subject=resource,
-                                        base=self.provider.baseurl))
+            if rel != [OIC_ISSUER]:
+                resp = BadRequest("Bad issuer in request")
+            else:
+                wf = WebFinger()
+                resp = Response(wf.response(subject=resource,
+                                            base=self.provider.baseurl))
         return resp(environ, start_response)
 
     def application(self, environ, start_response):
@@ -275,7 +283,7 @@ class Application(object):
         """
         path = environ.get('PATH_INFO', '').lstrip('/')
 
-        print 'start_response: ', start_response
+        print('start_response: ', start_response)
 
         if path == "robots.txt":
             return static(self, environ, start_response, "static/robots.txt")
@@ -312,6 +320,10 @@ if __name__ == '__main__':
     lookup = TemplateLookup(directories=[root + 'Templates', root + 'htdocs'],
                             module_directory=root + 'modules',
                             input_encoding='utf-8', output_encoding='utf-8')
+
+    def mako_renderer(template_name, context):
+        mte = lookup.get_template(template_name)
+        return mte.render(**context)
 
     usernamePasswords = {
         "user1": "1",
@@ -385,12 +397,10 @@ if __name__ == '__main__':
         client_authn=verify_client,                    # client authentication
         symkey=config.SYM_KEY,                         # Used for Symmetric key authentication
         # urlmap = None,                               # ?
-        # ca_certs = "",                               # ?
         # keyjar = None,                               # ?
         # hostname = "",                               # ?
-        template_lookup=lookup,                        # ?
-        template={"form_post": "form_response.mako"},  # ?
-        # verify_ssl = True,                           # ?
+        template_renderer=mako_renderer,               # Rendering custom templates
+        # verify_ssl = True,                           # Enable SSL certs
         # capabilities = None,                         # ?
         # schema = OpenIDSchema,                       # ?
         # jwks_uri = '',                               # ?
@@ -465,10 +475,10 @@ if __name__ == '__main__':
     _app = Application(provider, _urls)
 
     # Setup the web server
-    server = wsgiserver.CherryPyWSGIServer(('0.0.0.0', config.PORT), _app.application)
+    server = wsgiserver.CherryPyWSGIServer(('0.0.0.0', config.PORT), _app.application) # nosec
     server.ssl_adapter = BuiltinSSLAdapter(config.SERVER_CERT, config.SERVER_KEY)
 
-    print "OIDC Provider server started (issuer={}, port={})".format(config.ISSUER, config.PORT)
+    print("OIDC Provider server started (issuer={}, port={})".format(config.ISSUER, config.PORT))
 
     try:
         server.start()

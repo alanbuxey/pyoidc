@@ -1,14 +1,13 @@
-from future.backports.urllib.parse import urlencode
-from future.moves.urllib.parse import parse_qs
-
 import base64
 import json
 import logging
 import uuid
-import xml.etree.ElementTree as ET
+from typing import Optional  # noqa
+from urllib.parse import parse_qs
+from urllib.parse import urlencode
 
 import requests
-import six
+from defusedxml import ElementTree as ET
 
 from oic.utils.authn.user import UserAuthnMethod
 from oic.utils.http_util import SeeOther
@@ -42,10 +41,10 @@ class CasAuthnMethod(UserAuthnMethod):
     # The name for the CAS cookie, containing query parameters and nonce.
     CONST_CAS_COOKIE = "cascookie"
 
-    def __init__(self, srv, cas_server, service_url, return_to,
-                 extra_validation=None):
+    def __init__(self, srv, cas_server, service_url, return_to, extra_validation=None):
         """
-        Constructor for the class.
+        Construct the class.
+
         :param srv: Usually none, but otherwise the oic server.
         :param cas_server: Base URL to the cas server.
         :param service_url: BASE url to the service that will use CAS. In
@@ -61,7 +60,7 @@ class CasAuthnMethod(UserAuthnMethod):
 
     def create_redirect(self, query):
         """
-        Performs the redirect to the CAS server.
+        Perform the redirect to the CAS server.
 
         :rtype : Response
         :param query: All query parameters to be added to the return_to URL
@@ -70,25 +69,31 @@ class CasAuthnMethod(UserAuthnMethod):
         """
         try:
             req = parse_qs(query)
-            acr = req['acr_values'][0]
+            acr = req["acr_values"][0]  # type: Optional[str]
         except KeyError:
             acr = None
 
-        nonce = uuid.uuid4().get_urn()
-        service_url = urlencode(
-            {self.CONST_SERVICE: self.get_service_url(nonce, acr)})
+        nonce = uuid.uuid4().urn.encode()
+        service_url = urlencode({self.CONST_SERVICE: self.get_service_url(nonce, acr)})
         cas_url = self.cas_server + self.CONST_CASLOGIN + service_url
         cookie = self.create_cookie(
-            '{"' + self.CONST_NONCE + '": "' + base64.b64encode(
-                nonce) + '", "' +
-            self.CONST_QUERY + '": "' + base64.b64encode(query) + '"}',
+            '{"'
+            + self.CONST_NONCE
+            + '": "'
+            + base64.b64encode(nonce).decode()
+            + '", "'
+            + self.CONST_QUERY
+            + '": "'
+            + base64.b64encode(query).decode()
+            + '"}',
             self.CONST_CAS_COOKIE,
-            self.CONST_CAS_COOKIE)
+            self.CONST_CAS_COOKIE,
+        )
         return SeeOther(cas_url, headers=[cookie])
 
     def handle_callback(self, ticket, service_url):
         """
-        Handles the callback from the CAS server.
+        Handle the callback from the CAS server.
 
         :rtype : String
         :param ticket: Onetime CAS ticket to be validated.
@@ -96,8 +101,7 @@ class CasAuthnMethod(UserAuthnMethod):
         :return: Uid if the login was successful otherwise None.
         """
         data = {self.CONST_TICKET: ticket, self.CONST_SERVICE: service_url}
-        resp = requests.get(self.cas_server + self.CONST_CAS_VERIFY_TICKET,
-                            params=data)
+        resp = requests.get(self.cas_server + self.CONST_CAS_VERIFY_TICKET, params=data)
         root = ET.fromstring(resp.content)
         for l1 in root:
             if self.CONST_AUTHSUCCESS in l1.tag:
@@ -116,7 +120,7 @@ class CasAuthnMethod(UserAuthnMethod):
 
     def get_service_url(self, nonce, acr):
         """
-        Creates the service url for the CAS server.
+        Create the service url for the CAS server.
 
         :rtype : String
         :param nonce: The nonce to be added to the service url.
@@ -124,11 +128,19 @@ class CasAuthnMethod(UserAuthnMethod):
         """
         if acr is None:
             acr = ""
-        return self.service_url + "?" + self.CONST_NONCE + "=" + nonce + "&acr_values=" + acr
+        return (
+            self.service_url
+            + "?"
+            + self.CONST_NONCE
+            + "="
+            + nonce
+            + "&acr_values="
+            + acr
+        )
 
     def verify(self, request, cookie, **kwargs):
         """
-        Verifies if the authentication was successful.
+        Verify if the authentication was successful.
 
         :rtype : Response
         :param request: Contains the request parameters.
@@ -139,34 +151,33 @@ class CasAuthnMethod(UserAuthnMethod):
         :raise: ValueError
         """
         logger.debug("verify(%s)" % request)
-        if isinstance(request, six.string_types):
+        if isinstance(request, str):
             _dict = parse_qs(request)
         elif isinstance(request, dict):
             _dict = request
         else:
             raise ValueError("Wrong type of input")
         try:
-            cas_cookie, _ts, _typ = self.getCookieValue(cookie,
-                                                        self.CONST_CAS_COOKIE)
+            cas_cookie, _ts, _typ = self.getCookieValue(cookie, self.CONST_CAS_COOKIE)
             data = json.loads(cas_cookie)
             nonce = base64.b64decode(data[self.CONST_NONCE])
             if nonce != _dict[self.CONST_NONCE][0]:
-                logger.warning(
-                    'Someone tried to login without a correct nonce!')
+                logger.warning("Someone tried to login without a correct nonce!")
                 return Unauthorized("You are not authorized!")
             acr = None
             try:
                 acr = _dict["acr_values"][0]
             except KeyError:
                 pass
-            uid = self.handle_callback(_dict[self.CONST_TICKET],
-                                       self.get_service_url(nonce, acr))
+            uid = self.handle_callback(
+                _dict[self.CONST_TICKET], self.get_service_url(nonce, acr)
+            )
             if uid is None or uid == "":
-                logger.info('Someone tried to login, but was denied by CAS!')
+                logger.info("Someone tried to login, but was denied by CAS!")
                 return Unauthorized("You are not authorized!")
             cookie = self.create_cookie(uid, "casm")
             return_to = self.generate_return_url(self.return_to, uid)
-            if '?' in return_to:
+            if "?" in return_to:
                 return_to += "&"
             else:
                 return_to += "?"
@@ -174,6 +185,7 @@ class CasAuthnMethod(UserAuthnMethod):
             return SeeOther(return_to, headers=[cookie])
         except Exception:
             # FIXME: This should catch specific exception thrown from methods in the block
-            logger.fatal('Metod verify in user_cas.py had a fatal exception.',
-                         exc_info=True)
+            logger.fatal(
+                "Metod verify in user_cas.py had a fatal exception.", exc_info=True
+            )
             return Unauthorized("You are not authorized!")

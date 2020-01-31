@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 import logging
 import re
 
@@ -185,7 +184,7 @@ def application(environ, start_response):
     environ["oic.oas"] = OAS
 
     LOGGER.info("path: %s" % path)
-    if path in OAS.cert or path in OAS.jwk:
+    if path in OAS.jwk:
         return static(environ, start_response, path)
     else:
         for regex, callback in URLS:
@@ -225,6 +224,7 @@ if __name__ == '__main__':
     from cherrypy import wsgiserver
     from cherrypy.wsgiserver import ssl_builtin
 
+    from oic import rndstr
     from oic.oic.claims_provider import ClaimsServer
     from oic.utils.sdb import create_session_db
 
@@ -243,7 +243,7 @@ if __name__ == '__main__':
     config = json.loads(open(args.config).read())
     sdb = create_session_db(config["issuer"],
                             config["SESSION_KEY"],
-                            password="changethis")
+                            password=rndstr(16))
     OAS = ClaimsServer(config["issuer"], sdb, cdb, userinfo,
                        verify_client)
 
@@ -260,7 +260,7 @@ if __name__ == '__main__':
     if args.debug:
         OAS.debug = True
 
-    OAS.endpoints = ENDPOINTS
+    OAS.endp = ENDPOINTS
     if args.port == 80:
         OAS.baseurl = config["baseurl"]
     else:
@@ -274,7 +274,7 @@ if __name__ == '__main__':
     OAS.claims_userinfo_endpoint = "%s%s" % (
         OAS.baseurl, UserClaimsInfoEndpoint.etype)
 
-    SRV = wsgiserver.CherryPyWSGIServer(('0.0.0.0', args.port), application)
+    SRV = wsgiserver.CherryPyWSGIServer(('0.0.0.0', args.port), application) # nosec
     SRV.ssl_adapter = ssl_builtin.BuiltinSSLAdapter("certs/server.crt",
                                                     "certs/server.key")
 

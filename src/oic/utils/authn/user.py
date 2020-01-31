@@ -1,15 +1,14 @@
-# coding=utf-8
-from future.backports.urllib.parse import unquote
-from future.backports.urllib.parse import urlencode
-from future.backports.urllib.parse import urlsplit
-from future.backports.urllib.parse import urlunsplit
-from future.moves.urllib.parse import parse_qs
-
 import base64
+import hmac
 import logging
 import time
+from urllib.parse import parse_qs
+from urllib.parse import unquote_plus
+from urllib.parse import urlencode
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
-import six
+from jwkest import as_unicode
 
 from oic.exception import ImproperlyConfigured
 from oic.exception import PyoidcError
@@ -22,7 +21,7 @@ from oic.utils.http_util import SeeOther
 from oic.utils.http_util import Unauthorized
 from oic.utils.sanitize import sanitize
 
-__author__ = 'rolandh'
+__author__ = "rolandh"
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +32,15 @@ LOC = {
         "login_title": "Username",
         "passwd_title": "Password",
         "submit_text": "Submit",
-        "client_policy_title": "Client Policy"},
+        "client_policy_title": "Client Policy",
+    },
     "se": {
         "title": "Logga in",
         "login_title": u"Användarnamn",
         "passwd_title": u"Lösenord",
         "submit_text": u"Sänd",
-        "client_policy_title": "Klientens sekretesspolicy"
-    }
+        "client_policy_title": "Klientens sekretesspolicy",
+    },
 }
 
 
@@ -72,7 +72,7 @@ class UserAuthnMethod(CookieDealer):
         self.query_param = "upm_answer"
 
     def __call__(self, *args, **kwargs):
-        raise NotImplemented
+        raise NotImplementedError()
 
     def authenticated_as(self, cookie=None, **kwargs):
         if cookie is None:
@@ -90,24 +90,28 @@ class UserAuthnMethod(CookieDealer):
             else:
                 uid, _ts, typ = val
 
-            if typ == "uam":  # shortlived
+            if typ == "uam":  # short lived
                 _now = int(time.time())
                 if _now > (int(_ts) + int(self.cookie_ttl * 60)):
                     logger.debug("Authentication timed out")
-                    raise ToOld("%d > (%d + %d)" % (_now, int(_ts),
-                                                    int(self.cookie_ttl * 60)))
+                    raise ToOld(
+                        "%d > (%d + %d)" % (_now, int(_ts), int(self.cookie_ttl * 60))
+                    )
             else:
                 if "max_age" in kwargs and kwargs["max_age"]:
                     _now = int(time.time())
                     if _now > (int(_ts) + int(kwargs["max_age"])):
                         logger.debug("Authentication too old")
-                        raise ToOld("%d > (%d + %d)" % (
-                            _now, int(_ts), int(kwargs["max_age"])))
+                        raise ToOld(
+                            "%d > (%d + %d)" % (_now, int(_ts), int(kwargs["max_age"]))
+                        )
 
             return {"uid": uid}, _ts
 
     def generate_return_url(self, return_to, uid, path=""):
         """
+        Create an URL for returning.
+
         :param return_to: If it starts with '/' it's an absolute path otherwise
         a relative path.
         :param uid:
@@ -131,11 +135,10 @@ class UserAuthnMethod(CookieDealer):
         return create_return_url(_path, uid, **{self.query_param: "true"})
 
     def verify(self, **kwargs):
-        raise NotImplemented
+        raise NotImplementedError
 
     def get_multi_auth_cookie(self, cookie):
-        rp_query_cookie = self.getCookieValue(cookie,
-                                              UserAuthnMethod.MULTI_AUTH_COOKIE)
+        rp_query_cookie = self.getCookieValue(cookie, UserAuthnMethod.MULTI_AUTH_COOKIE)
 
         if rp_query_cookie:
             return rp_query_cookie[0]
@@ -156,8 +159,7 @@ def url_encode_params(params=None):
 
 def create_return_url(base, query, **kwargs):
     """
-    Add a query string plus extra parameters to a base URL which may contain
-    a query part already.
+    Add a query string plus extra parameters to a base URL which may contain a query part already.
 
     :param base: redirect_uri may contain a query part, no fragment allowed.
     :param query: Old query part as a string
@@ -170,7 +172,7 @@ def create_return_url(base, query, **kwargs):
 
     for key, values in parse_qs(query).items():
         if key in kwargs:
-            if isinstance(kwargs[key], six.string_types):
+            if isinstance(kwargs[key], str):
                 kwargs[key] = [kwargs[key]]
             kwargs[key].extend(values)
         else:
@@ -179,7 +181,7 @@ def create_return_url(base, query, **kwargs):
     if part.query:
         for key, values in parse_qs(part.query).items():
             if key in kwargs:
-                if isinstance(kwargs[key], six.string_types):
+                if isinstance(kwargs[key], str):
                     kwargs[key] = [kwargs[key]]
                 kwargs[key].extend(values)
             else:
@@ -197,16 +199,34 @@ def create_return_url(base, query, **kwargs):
 
 
 class UsernamePasswordMako(UserAuthnMethod):
-    """Do user authentication using the normal username password form in a
-    WSGI environment using Mako as template system"""
+    """
+    Do user authentication using the normal username password form.
 
-    param_map = {"as_user": "login", "acr_values": "acr",
-                 "policy_uri": "policy_uri", "logo_uri": "logo_uri",
-                 "tos_uri": "tos_uri", "query": "query"}
+    Works in a WSGI environment using Mako as template system.
+    """
 
-    def __init__(self, srv, mako_template, template_lookup, pwd, return_to="",
-                 templ_arg_func=None, verification_endpoints=None):
+    param_map = {
+        "as_user": "login",
+        "acr_values": "acr",
+        "policy_uri": "policy_uri",
+        "logo_uri": "logo_uri",
+        "tos_uri": "tos_uri",
+        "query": "query",
+    }
+
+    def __init__(
+        self,
+        srv,
+        mako_template,
+        template_lookup,
+        pwd,
+        return_to="",
+        templ_arg_func=None,
+        verification_endpoints=None,
+    ):
         """
+        Initialize the class.
+
         :param srv: The server instance
         :param mako_template: Which Mako template to use
         :param pwd: Username/password dictionary like database
@@ -226,13 +246,13 @@ class UsernamePasswordMako(UserAuthnMethod):
 
     def template_args(self, end_point_index=0, **kwargs):
         """
-        Method to override if necessary, dependent on the page layout
-        and context
+        Build the context for authn page.
+
+        Method to override if necessary, dependent on the page layout and context.
 
         :param kwargs:
         :return: dictionary of parameters used to build the Authn page
         """
-
         try:
             action = kwargs["action"]
         except KeyError:
@@ -269,14 +289,7 @@ class UsernamePasswordMako(UserAuthnMethod):
         return argv
 
     def __call__(self, cookie=None, end_point_index=0, **kwargs):
-        """
-        Put up the login form
-        """
-        # if cookie:
-        #     headers = [cookie]
-        # else:
-        #     headers = []
-
+        """Put up the login form."""
         resp = Response()
 
         argv = self.templ_arg_func(end_point_index, **kwargs)
@@ -286,20 +299,19 @@ class UsernamePasswordMako(UserAuthnMethod):
         return resp
 
     def _verify(self, pwd, user):
-        assert pwd == self.passwd[user], "Passwords don't match."
+        if self.passwd[user] != pwd:
+            raise AssertionError("Passwords don't match.")
 
     def verify(self, request, **kwargs):
         """
-        Verifies that the given username and password was correct
-        :param request: Either the query part of a URL a urlencoded
-        body of a HTTP message or a parse such.
-        :param kwargs: Catch whatever else is sent.
-        :return: redirect back to where ever the base applications
-        wants the user after authentication.
-        """
+        Verify that the given username and password was correct.
 
+        :param request: Either the query part of a URL a urlencoded body of a HTTP message or a parse such.
+        :param kwargs: Catch whatever else is sent.
+        :return: redirect back to where ever the base applications wants the user after authentication.
+        """
         logger.debug("verify(%s)" % sanitize(request))
-        if isinstance(request, six.string_types):
+        if isinstance(request, str):
             _dict = compact(parse_qs(request))
         elif isinstance(request, dict):
             _dict = request
@@ -321,7 +333,7 @@ class UsernamePasswordMako(UserAuthnMethod):
                 try:
                     _qp = _dict["query"]
                 except KeyError:
-                    _qp = self.get_multi_auth_cookie(kwargs['cookie'])
+                    _qp = self.get_multi_auth_cookie(kwargs["cookie"])
         except (AssertionError, KeyError) as err:
             logger.debug("Password verification failed: {}".format(err))
             resp = Unauthorized("Unknown user or wrong password")
@@ -330,17 +342,17 @@ class UsernamePasswordMako(UserAuthnMethod):
             try:
                 _qp = _dict["query"]
             except KeyError:
-                _qp = self.get_multi_auth_cookie(kwargs['cookie'])
+                _qp = self.get_multi_auth_cookie(kwargs["cookie"])
 
         logger.debug("Password verification succeeded.")
-        # if "cookie" not in kwargs or self.srv.cookie_name not in kwargs["cookie"]:
         headers = [self.create_cookie(_dict["login"], "upm")]
         try:
             return_to = self.generate_return_url(kwargs["return_to"], _qp)
         except KeyError:
             try:
-                return_to = self.generate_return_url(self.return_to, _qp,
-                                                     kwargs["path"])
+                return_to = self.generate_return_url(
+                    self.return_to, _qp, kwargs["path"]
+                )
             except KeyError:
                 return_to = self.generate_return_url(self.return_to, _qp)
 
@@ -355,19 +367,21 @@ class UsernamePasswordMako(UserAuthnMethod):
 
 
 class BasicAuthn(UserAuthnMethod):
-
     def __init__(self, srv, pwd, ttl=5):
         UserAuthnMethod.__init__(self, srv, ttl)
         self.passwd = pwd
 
     def verify_password(self, user, password):
-        try:
-            assert password == self.passwd[user]
-        except (AssertionError, KeyError):
-            raise FailedAuthentication("Wrong password")
+        if user in self.passwd:
+            _pwd = self.passwd[user]
+            if not hmac.compare_digest(_pwd.encode(), password.encode()):
+                raise FailedAuthentication("Wrong user/password combination")
+        else:
+            raise FailedAuthentication("Wrong user/password combination")
 
     def authenticated_as(self, cookie=None, authorization="", **kwargs):
         """
+        Return authenticated user and time of login.
 
         :param cookie: A HTTP Cookie
         :param authorization: The HTTP Authorization header
@@ -378,14 +392,15 @@ class BasicAuthn(UserAuthnMethod):
         if authorization.startswith("Basic"):
             authorization = authorization[6:]
 
-        (user, pwd) = base64.b64decode(authorization).split(":")
-        user = unquote(user)
+        _decoded = as_unicode(base64.b64decode(authorization))
+        (user, pwd) = _decoded.split(":")
+        user = unquote_plus(user)
+        pwd = unquote_plus(pwd)
         self.verify_password(user, pwd)
         return {"uid": user}, time.time()
 
 
 class SymKeyAuthn(UserAuthnMethod):
-
     def __init__(self, srv, ttl, symkey):
         UserAuthnMethod.__init__(self, srv, ttl)
 
@@ -396,6 +411,7 @@ class SymKeyAuthn(UserAuthnMethod):
 
     def authenticated_as(self, cookie=None, authorization="", **kwargs):
         """
+        Return authenticated user and time of login.
 
         :param cookie: A HTTP Cookie
         :param authorization: The HTTP Authorization header
@@ -403,7 +419,7 @@ class SymKeyAuthn(UserAuthnMethod):
         :param kwargs: extra key word arguments
         :return:
         """
-        (encmsg, iv) = base64.b64decode(authorization).split(":")
+        (encmsg, iv) = base64.b64decode(authorization).split(b":")
         try:
             user = aes.decrypt(self.symkey, encmsg, iv)
         except (AssertionError, KeyError):
@@ -421,6 +437,7 @@ class NoAuthn(UserAuthnMethod):
 
     def authenticated_as(self, cookie=None, authorization="", **kwargs):
         """
+        Return authenticated user and time of login.
 
         :param cookie: A HTTP Cookie
         :param authorization: The HTTP Authorization header
@@ -428,5 +445,4 @@ class NoAuthn(UserAuthnMethod):
         :param kwargs: extra key word arguments
         :return:
         """
-
         return {"uid": self.user}, time.time()

@@ -1,3 +1,5 @@
+from typing import Dict  # noqa
+
 from oic import rndstr
 from oic.extension.single import SingleClient
 from oic.extension.single import SingleService
@@ -11,27 +13,27 @@ from oic.utils.time_util import time_sans_frac
 
 class AuthorizationRequest(Message):
     c_param = {
-        'response_type': SINGLE_REQUIRED_STRING,
-        'client_id': SINGLE_REQUIRED_STRING,
-        'scope': SINGLE_OPTIONAL_STRING,
+        "response_type": SINGLE_REQUIRED_STRING,
+        "client_id": SINGLE_REQUIRED_STRING,
+        "scope": SINGLE_OPTIONAL_STRING,
     }
 
 
 class AuthorizationResponse(Message):
     c_param = {
-        'device_code': SINGLE_REQUIRED_STRING,
-        'user_code': SINGLE_REQUIRED_STRING,
-        'verification_uri': SINGLE_REQUIRED_STRING,
-        'expires_in': SINGLE_OPTIONAL_INT,
-        'interval': SINGLE_OPTIONAL_INT,
+        "device_code": SINGLE_REQUIRED_STRING,
+        "user_code": SINGLE_REQUIRED_STRING,
+        "verification_uri": SINGLE_REQUIRED_STRING,
+        "expires_in": SINGLE_OPTIONAL_INT,
+        "interval": SINGLE_OPTIONAL_INT,
     }
 
 
 class TokenRequest(Message):
     c_param = {
-        'grant_type': SINGLE_REQUIRED_STRING,
-        'device_code': SINGLE_REQUIRED_STRING,
-        'client_id': SINGLE_REQUIRED_STRING,
+        "grant_type": SINGLE_REQUIRED_STRING,
+        "device_code": SINGLE_REQUIRED_STRING,
+        "client_id": SINGLE_REQUIRED_STRING,
     }
 
 
@@ -40,10 +42,10 @@ class DeviceFlowServer(SingleService):
         SingleService.__init__(self, host)
         self.host = host
         # map between device_code and user_code
-        self.client_id2device = {}
-        self.device2user = {}
-        self.user_auth = {}
-        self.device_code_expire_at = {}
+        self.client_id2device = {}  # type: Dict[str, str]
+        self.device2user = {}  # type: Dict[str, str]
+        self.user_auth = {}  # type: Dict[str, bool]
+        self.device_code_expire_at = {}  # type: Dict[str, int]
         self.device_code_life_time = 900  # 15 minutes
 
     def device_endpoint(self, request, authn=None):
@@ -54,24 +56,24 @@ class DeviceFlowServer(SingleService):
 
         self.device2user[device_code] = user_code
         self.user_auth[user_code] = False
-        self.client_id2device[_req['client_id']] = device_code
-        # in_a_while(minutes=15)
-        self.device_code_expire_at[
-            device_code] = time_sans_frac() + self.device_code_life_time
+        self.client_id2device[_req["client_id"]] = device_code
+        self.device_code_expire_at[device_code] = (
+            time_sans_frac() + self.device_code_life_time
+        )
 
     def token_endpoint(self, request, authn=None):
         _req = TokenRequest(**request)
-        _dc = _req['device_code']
+        _dc = _req["device_code"]
 
         if time_sans_frac() > self.device_code_expire_at[_dc]:
-            return self.host.error_code(error='expired_token')
+            return self.host.error_code(error="expired_token")
 
         _uc = self.device2user[_dc]
 
         if self.user_auth[_uc]:  # User is authenticated
             pass
         else:
-            return self.host.error_code(error='authorization_pending')
+            return self.host.error_code(error="authorization_pending")
 
     def device_auth(self, user_code):
         self.user_auth[user_code] = True
@@ -80,34 +82,41 @@ class DeviceFlowServer(SingleService):
 class DeviceFlowClient(SingleClient):
     def __init__(self, host):
         SingleClient.__init__(self, host)
-        self.requests = {'authorization': self.authorization_request,
-                         'token': self.authorization_request}
+        self.requests = {
+            "authorization": self.authorization_request,
+            "token": self.authorization_request,
+        }
 
-    def authorization_request(self, scope=''):
-        req = AuthorizationRequest(client_id=self.host.client_id,
-                                   response_type='device_code')
+    def authorization_request(self, scope=""):
+        req = AuthorizationRequest(
+            client_id=self.host.client_id, response_type="device_code"
+        )
         if scope:
-            req['scope'] = scope
+            req["scope"] = scope
 
         http_response = self.host.http_request(
-            self.host.provider_info['device_endpoint'], 'POST',
-            req.to_urlencoded())
+            self.host.provider_info["device_endpoint"], "POST", req.to_urlencoded()
+        )
 
-        response = self.host.parse_request_response(AuthorizationResponse,
-                                                    http_response, 'json')
+        response = self.host.parse_request_response(
+            AuthorizationResponse, http_response, "json"
+        )
 
         return response
 
-    def token_request(self, device_code=''):
+    def token_request(self, device_code=""):
         req = TokenRequest(
             grant_type="urn:ietf:params:oauth:grant-type:device_code",
-            device_code=device_code, client_id=self.host.client_id)
+            device_code=device_code,
+            client_id=self.host.client_id,
+        )
 
         http_response = self.host.http_request(
-            self.host.provider_info['token_endpoint'], 'POST',
-            req.to_urlencoded())
+            self.host.provider_info["token_endpoint"], "POST", req.to_urlencoded()
+        )
 
-        response = self.host.parse_request_response(AccessTokenResponse,
-                                                    http_response, 'json')
+        response = self.host.parse_request_response(
+            AccessTokenResponse, http_response, "json"
+        )
 
         return response

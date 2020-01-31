@@ -14,18 +14,21 @@ def test_device_flow():
     srv = DeviceFlowServer(_server)
 
     # init
-    req = AuthorizationRequest(client_id=cli.host.client_id,
-                               response_type='device_code')
+    req = AuthorizationRequest(
+        client_id=cli.host.client_id, response_type="device_code"
+    )
 
     resp = srv.device_endpoint(req)
 
     # Polling
 
-    req = TokenRequest(
+    req2 = TokenRequest(
         grant_type="urn:ietf:params:oauth:grant-type:device_code",
-        device_code=resp['device_dode'], client_id=cli.host.client_id)
+        device_code=resp["device_dode"],
+        client_id=cli.host.client_id,
+    )
 
-    resp = srv.token_endpoint(req)
+    resp = srv.token_endpoint(req2)
 
     # Authorization Pending
 

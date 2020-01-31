@@ -1,18 +1,18 @@
 try:
     import saml2
 except ImportError:
-    raise ImportError('This module can be used only with saml2 installed.')
+    raise ImportError("This module can be used only with saml2 installed.")
 
-
-from future.backports.urllib.parse import urlencode
-from future.moves.urllib.parse import parse_qs
 
 import base64
 import importlib
 import json
 import logging
+from typing import Dict  # noqa
+from typing import List  # noqa
+from urllib.parse import parse_qs
+from urllib.parse import urlencode
 
-import six
 from saml2 import BINDING_HTTP_ARTIFACT
 from saml2 import BINDING_HTTP_POST
 from saml2 import BINDING_HTTP_REDIRECT
@@ -43,11 +43,22 @@ class SAMLAuthnMethod(UserAuthnMethod):
     CONST_SAML_COOKIE = "samlauthc"
     CONST_HASIDP = "hasidp"
 
-    def __init__(self, srv, lookup, userdb, spconf, url, return_to,
-                 cache=None,
-                 bindings=None, userinfo=None, samlcache=None):
+    def __init__(
+        self,
+        srv,
+        lookup,
+        userdb,
+        spconf,
+        url,
+        return_to,
+        cache=None,
+        bindings=None,
+        userinfo=None,
+        samlcache=None,
+    ):
         """
-        Constructor for the class.
+        Construct the class.
+
         :param srv: Usually none, but otherwise the oic server.
         :param return_to: The URL to return to after a successful
         authentication.
@@ -56,7 +67,7 @@ class SAMLAuthnMethod(UserAuthnMethod):
         self.userinfo = userinfo
 
         if cache is None:
-            self.cache_outstanding_queries = {}
+            self.cache_outstanding_queries = {}  # type: Dict[str, str]
         else:
             self.cache_outstanding_queries = cache
         UserAuthnMethod.__init__(self, srv)
@@ -65,20 +76,21 @@ class SAMLAuthnMethod(UserAuthnMethod):
         if bindings:
             self.bindings = bindings
         else:
-            self.bindings = [BINDING_HTTP_REDIRECT, BINDING_HTTP_POST,
-                             BINDING_HTTP_ARTIFACT]
+            self.bindings = [
+                BINDING_HTTP_REDIRECT,
+                BINDING_HTTP_POST,
+                BINDING_HTTP_ARTIFACT,
+            ]
         # TODO Why does this exist?
         self.verification_endpoint = ""
         # Configurations for the SP handler.
         self.sp_conf = importlib.import_module(spconf)
-        config = SPConfig().load(self.sp_conf.CONFIG)
+        config = SPConfig().load(self.sp_conf.CONFIG)  # type: ignore
         self.sp = Saml2Client(config=config)
         mte = lookup.get_template("unauthorized.mako")
-        argv = {
-            "message": "You are not authorized!",
-        }
+        argv = {"message": "You are not authorized!"}
         self.not_authorized = mte.render(**argv)
-        self.samlcache = self.sp_conf.SAML_CACHE
+        self.samlcache = self.sp_conf.SAML_CACHE  # type: ignore
 
     def __call__(self, query="", end_point_index=None, *args, **kwargs):
 
@@ -92,7 +104,7 @@ class SAMLAuthnMethod(UserAuthnMethod):
 
     def verify(self, request, cookie, path, requrl, end_point_index=None, **kwargs):
         """
-        Verifies if the authentication was successful.
+        Verify if the authentication was successful.
 
         :rtype : Response
         :param request: Contains the request parameters.
@@ -102,7 +114,7 @@ class SAMLAuthnMethod(UserAuthnMethod):
         return_to url. Otherwise a unauthorized response.
         :raise: ValueError
         """
-        if isinstance(request, six.string_types):
+        if isinstance(request, str):
             request = parse_qs(request)
         elif isinstance(request, dict):
             pass
@@ -118,8 +130,7 @@ class SAMLAuthnMethod(UserAuthnMethod):
                 binding = endp[1]
                 break
 
-        saml_cookie, _ts, _typ = self.getCookieValue(cookie,
-                                                     self.CONST_SAML_COOKIE)
+        saml_cookie, _ts, _typ = self.getCookieValue(cookie, self.CONST_SAML_COOKIE)
         data = json.loads(saml_cookie)
 
         rp_query_cookie = self.get_multi_auth_cookie(cookie)
@@ -129,12 +140,14 @@ class SAMLAuthnMethod(UserAuthnMethod):
         if not query:
             query = base64.b64decode(data[self.CONST_QUERY]).decode("ascii")
 
-        if data[self.CONST_HASIDP] == 'False':
+        if data[self.CONST_HASIDP] == "False":
             (done, response) = self._pick_idp(request, end_point_index)
             if done == 0:
                 entity_id = response
                 # Do the AuthnRequest
-                resp = self._redirect_to_auth(self.sp, entity_id, query, end_point_index)
+                resp = self._redirect_to_auth(
+                    self.sp, entity_id, query, end_point_index
+                )
                 return resp, False
             return response, False
 
@@ -144,8 +157,8 @@ class SAMLAuthnMethod(UserAuthnMethod):
 
         try:
             response = self.sp.parse_authn_request_response(
-                request["SAMLResponse"][0], binding,
-                self.cache_outstanding_queries)
+                request["SAMLResponse"][0], binding, self.cache_outstanding_queries
+            )
         except UnknownPrincipal as excp:
             logger.error("UnknownPrincipal: %s" % (excp,))
             return Unauthorized(self.not_authorized), False
@@ -159,8 +172,8 @@ class SAMLAuthnMethod(UserAuthnMethod):
             logger.error("Other error: %s" % (err,))
             return Unauthorized(self.not_authorized), False
 
-        if self.sp_conf.VALID_ATTRIBUTE_RESPONSE is not None:
-            for k, v in six.iteritems(self.sp_conf.VALID_ATTRIBUTE_RESPONSE):
+        if self.sp_conf.VALID_ATTRIBUTE_RESPONSE is not None:  # type: ignore
+            for k, v in self.sp_conf.VALID_ATTRIBUTE_RESPONSE.items():  # type: ignore
                 if k not in response.ava:
                     return Unauthorized(self.not_authorized), False
                 else:
@@ -184,9 +197,8 @@ class SAMLAuthnMethod(UserAuthnMethod):
                 self.samlcache["AA_ENTITYID"] = response.entity_id
         self.setup_userdb(uid, response.ava)
 
-        return_to = create_return_url(self.return_to, uid,
-                                      **{self.query_param: "true"})
-        if '?' in return_to:
+        return_to = create_return_url(self.return_to, uid, **{self.query_param: "true"})
+        if "?" in return_to:
             return_to += "&"
         else:
             return_to += "?"
@@ -198,8 +210,11 @@ class SAMLAuthnMethod(UserAuthnMethod):
 
     def setup_userdb(self, uid, samldata):
         attributes = {}
-        if self.sp_conf.ATTRIBUTE_WHITELIST is not None:
-            for attr, allowed in six.iteritems(self.sp_conf.ATTRIBUTE_WHITELIST):
+        if self.sp_conf.ATTRIBUTE_WHITELIST is not None:  # type: ignore
+            for (
+                attr,
+                allowed,
+            ) in self.sp_conf.ATTRIBUTE_WHITELIST.items():  # type: ignore
                 if attr in samldata:
                     if allowed is not None:
                         tmp_attr_list = []
@@ -213,26 +228,23 @@ class SAMLAuthnMethod(UserAuthnMethod):
                         attributes[attr] = samldata[attr]
         else:
             attributes = samldata
-        userdb = {}
+        userdb = {}  # type: Dict[str, List[str]]
 
-        if self.sp_conf.OPENID2SAMLMAP is None:
+        if self.sp_conf.OPENID2SAMLMAP is None:  # type: ignore
             userdb = attributes.copy()
         else:
-            for oic, saml in six.iteritems(self.sp_conf.OPENID2SAMLMAP):
+            for oic, saml in self.sp_conf.OPENID2SAMLMAP.items():  # type: ignore
                 if saml in attributes:
                     userdb[oic] = attributes[saml]
         self.userdb[uid] = userdb
 
     def _pick_idp(self, query, end_point_index):
-        """
-        If more than one idp and if none is selected, I have to do wayf or
-        disco
-        """
-        query_dict = {}
-        if isinstance(query, six.string_types):
+        """If more than one idp and if none is selected, I have to do wayf or disco."""
+        query_dict = {}  # type: Dict[str, List[str]]
+        if isinstance(query, str):
             query_dict = dict(parse_qs(query))
         else:
-            for key, value in six.iteritems(query):
+            for key, value in query.items():
                 if isinstance(value, list):
                     query_dict[key] = value[0]
                 else:
@@ -260,10 +272,17 @@ class SAMLAuthnMethod(UserAuthnMethod):
 
         if not idp_entity_id:
             cookie = self.create_cookie(
-                '{"' + self.CONST_QUERY + '": "' + base64.b64encode(query) +
-                '" , "' + self.CONST_HASIDP + '": "False" }',
-                self.CONST_SAML_COOKIE, self.CONST_SAML_COOKIE)
-            if self.sp_conf.WAYF:
+                '{"'
+                + self.CONST_QUERY
+                + '": "'
+                + base64.b64encode(query).decode()
+                + '" , "'
+                + self.CONST_HASIDP
+                + '": "False" }',
+                self.CONST_SAML_COOKIE,
+                self.CONST_SAML_COOKIE,
+            )
+            if self.sp_conf.WAYF:  # type: ignore
                 if query:
                     try:
                         wayf_selected = query_dict["wayf_selected"][0]
@@ -272,7 +291,7 @@ class SAMLAuthnMethod(UserAuthnMethod):
                     idp_entity_id = wayf_selected
                 else:
                     return self._wayf_redirect(cookie)
-            elif self.sp_conf.DISCOSRV:
+            elif self.sp_conf.DISCOSRV:  # type: ignore
                 if query:
                     idp_entity_id = _cli.parse_discovery_service_response(query=query)
                 if not idp_entity_id:
@@ -281,15 +300,18 @@ class SAMLAuthnMethod(UserAuthnMethod):
                     eid = _cli.config.entityid
 
                     disco_end_point_index = end_point_index["disco_end_point_index"]
-                    ret = _cli.config.getattr("endpoints", "sp")[
-                        "discovery_response"][disco_end_point_index][0]
+                    ret = _cli.config.getattr("endpoints", "sp")["discovery_response"][
+                        disco_end_point_index
+                    ][0]
                     ret += "?sid=%s" % sid_
                     loc = _cli.create_discovery_service_request(
-                        self.sp_conf.DISCOSRV, eid, **{"return": ret})
+                        self.sp_conf.DISCOSRV, eid, **{"return": ret}  # type: ignore
+                    )
                     return -1, SeeOther(loc, headers=[cookie])
             elif not len(idps):
                 raise ServiceErrorException(
-                    'Misconfiguration for the SAML Service Provider!')
+                    "Misconfiguration for the SAML Service Provider!"
+                )
             else:
                 return -1, NotImplemented("No WAYF or DS present!")
         return 0, idp_entity_id
@@ -297,47 +319,60 @@ class SAMLAuthnMethod(UserAuthnMethod):
     def _wayf_redirect(self, cookie):
         sid_ = sid()
         self.cache_outstanding_queries[sid_] = self.verification_endpoint
-        return -1, SeeOther(headers=[
-            ('Location', "%s?%s" % (self.sp_conf.WAYF, sid_)), cookie])
+        return (
+            -1,
+            SeeOther(
+                headers=[
+                    ("Location", "%s?%s" % (self.sp_conf.WAYF, sid_)),  # type: ignore
+                    cookie,
+                ]
+            ),
+        )
 
     def _redirect_to_auth(self, _cli, entity_id, query, end_point_index, vorg_name=""):
         try:
             binding, destination = _cli.pick_binding(
-                "single_sign_on_service", self.bindings, "idpsso",
-                entity_id=entity_id)
-            logger.debug("binding: %s, destination: %s" % (binding,
-                                                           destination))
+                "single_sign_on_service", self.bindings, "idpsso", entity_id=entity_id
+            )
+            logger.debug("binding: %s, destination: %s" % (binding, destination))
 
             extensions = None
             kwargs = {}
 
             if end_point_index:
-                kwargs["assertion_consumer_service_index"] = str(end_point_index[binding])
+                kwargs["assertion_consumer_service_index"] = str(
+                    end_point_index[binding]
+                )
 
             if _cli.authn_requests_signed:
                 _sid = saml2.s_utils.sid(_cli.seed)
                 req_id, msg_str = _cli.create_authn_request(
-                    destination, vorg=vorg_name,
-                    sign=_cli.authn_requests_signed, message_id=_sid,
-                    extensions=extensions, **kwargs)
+                    destination,
+                    vorg=vorg_name,
+                    sign=_cli.authn_requests_signed,
+                    message_id=_sid,
+                    extensions=extensions,
+                    **kwargs
+                )
                 _sid = req_id
             else:
-                req_id, req = _cli.create_authn_request(destination,
-                                                        vorg=vorg_name,
-                                                        sign=False, **kwargs)
+                req_id, req = _cli.create_authn_request(
+                    destination, vorg=vorg_name, sign=False, **kwargs
+                )
                 msg_str = "%s" % req
                 _sid = req_id
 
             _rstate = rndstr()
-            # self.cache.relay_state[_rstate] = came_from
-            ht_args = _cli.apply_binding(binding, msg_str, destination,
-                                         relay_state=_rstate)
+            ht_args = _cli.apply_binding(
+                binding, msg_str, destination, relay_state=_rstate
+            )
 
             logger.debug("ht_args: %s" % ht_args)
         except Exception as exc:
             logger.exception(exc)
             raise ServiceErrorException(
-                "Failed to construct the AuthnRequest: %s" % exc)
+                "Failed to construct the AuthnRequest: %s" % exc
+            )
 
         # remember the request
         self.cache_outstanding_queries[_sid] = self.return_to
@@ -345,11 +380,18 @@ class SAMLAuthnMethod(UserAuthnMethod):
 
     def response(self, binding, http_args, query):
         cookie = self.create_cookie(
-            '{"' + self.CONST_QUERY + '": "' + base64.b64encode(query.encode("ascii")).decode("ascii") +
-            '" , "' + self.CONST_HASIDP + '": "True" }',
-            self.CONST_SAML_COOKIE, self.CONST_SAML_COOKIE)
+            '{"'
+            + self.CONST_QUERY
+            + '": "'
+            + base64.b64encode(query.encode("ascii")).decode("ascii")
+            + '" , "'
+            + self.CONST_HASIDP
+            + '": "True" }',
+            self.CONST_SAML_COOKIE,
+            self.CONST_SAML_COOKIE,
+        )
         if binding == BINDING_HTTP_ARTIFACT:
-            resp = SeeOther()
+            resp = SeeOther()  # type: Response
         elif binding == BINDING_HTTP_REDIRECT:
             for param, value in http_args["headers"]:
                 if param == "Location":
@@ -359,7 +401,6 @@ class SAMLAuthnMethod(UserAuthnMethod):
                 raise ServiceErrorException("Parameter error")
         else:
             http_args["headers"].append(cookie)
-            resp = Response(http_args["data"],
-                            headers=http_args["headers"])
+            resp = Response(http_args["data"], headers=http_args["headers"])
 
         return resp

@@ -1,26 +1,31 @@
 from functools import cmp_to_key
+from typing import Any  # noqa
+from typing import Dict  # noqa
 
 from oic.utils.http_util import extract_from_request
 
-__author__ = 'rolandh'
+__author__ = "rolandh"
 
 UNSPECIFIED = "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified"
-INTERNETPROTOCOLPASSWORD = \
-    'urn:oasis:names:tc:SAML:2.0:ac:classes:InternetProtocolPassword'
-MOBILETWOFACTORCONTRACT = \
-    'urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorContract'
-PASSWORDPROTECTEDTRANSPORT = \
-    'urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport'
-PASSWORD = 'urn:oasis:names:tc:SAML:2.0:ac:classes:Password'
-TLSCLIENT = 'urn:oasis:names:tc:SAML:2.0:ac:classes:TLSClient'
+INTERNETPROTOCOLPASSWORD = (
+    "urn:oasis:names:tc:SAML:2.0:ac:classes:InternetProtocolPassword"
+)
+MOBILETWOFACTORCONTRACT = (
+    "urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorContract"
+)
+PASSWORDPROTECTEDTRANSPORT = (
+    "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
+)
+PASSWORD = "urn:oasis:names:tc:SAML:2.0:ac:classes:Password"  # nosec
+TLSCLIENT = "urn:oasis:names:tc:SAML:2.0:ac:classes:TLSClient"
 TIMESYNCTOKEN = "urn:oasis:names:tc:SAML:2.0:ac:classes:TimeSyncToken"
 
-CMP_TYPE = ['exact', 'minimum', 'maximum', 'better']
+CMP_TYPE = ["exact", "minimum", "maximum", "better"]
 
 
 class AuthnBroker(object):
     def __init__(self):
-        self.db = {"info": {}, "key": {}}
+        self.db = {"info": {}, "key": {}}  # type: Dict[str, Any]
         self.next = 0
 
     @staticmethod
@@ -41,7 +46,8 @@ class AuthnBroker(object):
 
     def add(self, acr, method, level=0, authn_authority=""):
         """
-        Adds a new authentication method.
+        Add a new authentication method.
+
         Assumes not more than one authentication method per type.
 
         :param acr: Add to what the authentication endpoint offers for this acr
@@ -49,12 +55,11 @@ class AuthnBroker(object):
         :param level: security level, positive integers, 0 is lowest
         :return:
         """
-
         _info = {
             "ref": acr,
             "method": method,
             "level": level,
-            "authn_auth": authn_authority
+            "authn_auth": authn_authority,
         }
 
         self.next += 1
@@ -141,15 +146,14 @@ class AuthnBroker(object):
 
     def pick(self, acr=None, comparision_type="minimum"):
         """
-        Given the authentication context find zero or more places where
-        the user could be sent next. Ordered according to security level.
+        Given the authentication context find zero or more places where the user could be sent next.
+
+        Ordered according to security level.
 
         :param acr: The authentication class reference requested
-        :param comparision_type: If the caller wants exact, at a minimum,
-            ... this level
+        :param comparision_type: If the caller wants exact, at a minimum, ... this level
         :return: An URL
         """
-
         if not comparision_type:
             comparision_type = "minimum"
 
@@ -187,7 +191,7 @@ class AuthnBroker(object):
     def __iter__(self):
         for item in self.db["info"].values():
             yield item["method"]
-        raise StopIteration
+        return
 
     def __len__(self):
         return len(self.db["info"].keys())
@@ -204,7 +208,7 @@ def make_auth_verify(callback, next_module_instance=None):
     setup_multi_auth (in multi_auth.py)
     :return: function encapsulating the specified callback which properly handles a multi auth chain.
     """
-
+    # This has to be here ...
     def auth_verify(environ, start_response, logger=None):
         kwargs = extract_from_request(environ)
 

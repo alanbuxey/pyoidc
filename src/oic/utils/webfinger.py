@@ -1,21 +1,17 @@
-# coding=utf-8
 import json
 import logging
 import re
+from typing import Any  # noqa - Used for MyPy
+from typing import Dict  # noqa - Used for MyPy
+from urllib.parse import urlencode
+from urllib.parse import urlparse
 
 import requests
-from six.moves.urllib.parse import urlencode
-from six.moves.urllib.parse import urlparse
 
 from oic.exception import PyoidcError
 from oic.utils.time_util import in_a_while
 
-try:
-    from past.builtins import basestring
-except ImportError:
-    pass
-
-__author__ = 'rolandh'
+__author__ = "rolandh"
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +24,10 @@ class WebFingerError(PyoidcError):
 
 
 class Base(object):
-    c_param = {}
+    c_param = {}  # type: Dict[str, Dict[str, Any]]
 
     def __init__(self, dic=None):
-        self._ava = {}
+        self._ava = {}  # type: Dict[str, Any]
         if dic is not None:
             self.load(dic)
 
@@ -39,32 +35,25 @@ class Base(object):
         try:
             spec = self.c_param[item]
         except KeyError:
-            spec = {"type": basestring, "required": False}  # default
+            spec = {"type": str, "required": False}  # default
 
         try:
             t1, t2 = spec["type"]
             if t1 == list:  # Should always be
-                assert not isinstance(val, basestring)
-                assert isinstance(val, list)
+                assert not isinstance(val, str)  # nosec
+                assert isinstance(val, list)  # nosec
                 res = []
                 if t2 == LINK:
                     for v in val:
                         res.append(LINK(v))
                 else:
                     for v in val:
-                        try:
-                            assert isinstance(v, t2)
-                        except AssertionError:
-                            pass
                         res.append(v)
                 self._ava[item] = res
         except TypeError:
             t2_type = spec["type"]
-            try:
-                assert isinstance(val, t2_type)
+            if isinstance(val, t2_type):
                 self._ava[item] = val
-            except AssertionError:
-                pass
 
     def load(self, dictionary):
         for key, spec in list(self.c_param.items()):
@@ -127,9 +116,9 @@ class Base(object):
 
 class LINK(Base):
     c_param = {
-        "rel": {"type": basestring, "required": True},
-        "type": {"type": basestring, "required": False},
-        "href": {"type": basestring, "required": False},
+        "rel": {"type": str, "required": True},
+        "type": {"type": str, "required": False},
+        "href": {"type": str, "required": False},
         "titles": {"type": dict, "required": False},
         "properties": {"type": dict, "required": False},
     }
@@ -137,15 +126,14 @@ class LINK(Base):
 
 class JRD(Base):
     c_param = {
-        "expires": {"type": basestring, "required": False},  # Optional
-        "subject": {"type": basestring, "required": False},  # Should
-        "aliases": {"type": (list, basestring), "required": False},  # Optional
+        "expires": {"type": str, "required": False},  # Optional
+        "subject": {"type": str, "required": False},  # Should
+        "aliases": {"type": (list, str), "required": False},  # Optional
         "properties": {"type": dict, "required": False},  # Optional
         "links": {"type": (list, LINK), "required": False},  # Optional
     }
 
-    def __init__(self, dic=None, days=0, seconds=0, minutes=0, hours=0,
-                 weeks=0):
+    def __init__(self, dic=None, days=0, seconds=0, minutes=0, hours=0, weeks=0):
         Base.__init__(self, dic)
         self.expires_in(days, seconds, minutes, hours, weeks)
 
@@ -158,9 +146,13 @@ class JRD(Base):
 
     def export(self):
         res = self.dump()
-        res["expires"] = in_a_while(days=self._exp_days, seconds=self._exp_secs,
-                                    minutes=self._exp_min, hours=self._exp_hour,
-                                    weeks=self._exp_week)
+        res["expires"] = in_a_while(
+            days=self._exp_days,
+            seconds=self._exp_secs,
+            minutes=self._exp_min,
+            hours=self._exp_hour,
+            weeks=self._exp_week,
+        )
         return res
 
 
@@ -191,28 +183,27 @@ class JRD(Base):
 # [ userinfo "@" ] host [ ":" port ], it is legal to have a user input
 # identifier like userinfo@host:port, e.g., alice@example.com:8080.
 
+
 class URINormalizer(object):
     def has_scheme(self, inp):
         if "://" in inp:
             return True
         else:
-            authority = inp.replace('/', '#').replace('?', '#').split("#")[0]
+            authority = inp.replace("/", "#").replace("?", "#").split("#")[0]
 
-            if ':' in authority:
-                scheme_or_host, host_or_port = authority.split(':', 1)
-                try:
-                    # Assert it's not a port number
-                    assert not re.match('^\d+$', host_or_port)
-                except AssertionError:
+            if ":" in authority:
+                _, host_or_port = authority.split(":", 1)
+                # Assert it's not a port number
+                if re.match(r"^\d+$", host_or_port):
                     return False
             else:
                 return False
         return True
 
     def acct_scheme_assumed(self, inp):
-        if '@' in inp:
-            host = inp.split('@')[-1]
-            return not (':' in host or '/' in host or '?' in host)
+        if "@" in inp:
+            host = inp.split("@")[-1]
+            return not (":" in host or "/" in host or "?" in host)
         else:
             return False
 
@@ -233,7 +224,7 @@ class WebFinger(object):
         self.jrd = None
         self.events = None
 
-    def query(self, resource, rel=None):
+    def query(self, resource, rel=None, host=None):
         resource = URINormalizer().normalize(resource)
 
         info = [("resource", resource)]
@@ -241,24 +232,25 @@ class WebFinger(object):
         if rel is None:
             if self.default_rel:
                 info.append(("rel", self.default_rel))
-        elif isinstance(rel, basestring):
+        elif isinstance(rel, str):
             info.append(("rel", rel))
         else:
             for val in rel:
                 info.append(("rel", val))
 
-        if resource.startswith("http"):
-            part = urlparse(resource)
-            host = part.hostname
-            if part.port is not None:
-                host += ":" + str(part.port)
-        elif resource.startswith("acct:"):
-            host = resource.split('@')[-1]
-            host = host.replace('/', '#').replace('?', '#').split("#")[0]
-        elif resource.startswith("device:"):
-            host = resource.split(':')[1]
-        else:
-            raise WebFingerError("Unknown schema")
+        if host is None:
+            if resource.startswith("http"):
+                part = urlparse(resource)
+                host = part.hostname
+                if part.port is not None:
+                    host += ":" + str(part.port)
+            elif resource.startswith("acct:"):
+                host = resource.split("@")[-1]
+                host = host.replace("/", "#").replace("?", "#").split("#")[0]
+            elif resource.startswith("device:"):
+                host = resource.split(":")[1]
+            else:
+                raise WebFingerError("Unknown schema")
 
         return "%s?%s" % (WF_URL % host, urlencode(info))
 
@@ -274,21 +266,23 @@ class WebFinger(object):
                 return None
 
         return {
-            "headers": {"Access-Control-Allow-Origin": "*",
-                        "Content-Type": "application/json; charset=UTF-8"},
-            "body": json.dumps(jrd.export())
+            "headers": {
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json; charset=UTF-8",
+            },
+            "body": json.dumps(jrd.export()),
         }
 
-    def discovery_query(self, resource):
+    def discovery_query(self, resource, host=None):
         """
-        Given a resource find a OpenID connect OP to use
+        Given a resource find a OpenID connect OP to use.
 
+        :param host: Force the host. Disable host detection on resource
         :param resource: An identifier of an entity
         :return: A URL if an OpenID Connect OP could be found
         """
-
         logger.debug("Looking for OIDC OP for '%s'" % resource)
-        url = self.query(resource, OIC_ISSUER)
+        url = self.query(resource, rel=OIC_ISSUER, host=host)
         try:
             rsp = self.httpd.http_request(url, allow_redirects=True)
         except requests.ConnectionError:
@@ -296,15 +290,15 @@ class WebFinger(object):
 
         if rsp.status_code == 200:
             if self.events:
-                self.events.store('Response', rsp.text)
+                self.events.store("Response", rsp.text)
 
             self.jrd = self.load(rsp.text)
             if self.events:
-                self.events.store('JRD Response', self.jrd)
+                self.events.store("JRD Response", self.jrd)
             for link in self.jrd["links"]:
                 if link["rel"] == OIC_ISSUER:
-                    if not link['href'].startswith('https://'):
-                        raise WebFingerError('Must be a HTTPS href')
+                    if not link["href"].startswith("https://"):
+                        raise WebFingerError("Must be a HTTPS href")
                     return link["href"]
             return None
         elif rsp.status_code in [302, 301, 307]:

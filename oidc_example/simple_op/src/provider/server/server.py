@@ -6,17 +6,18 @@ import mimetypes
 import os
 from functools import partial
 from functools import wraps
+from urllib import parse as urlparse
 
 import cherrypy
 import yaml
 from cherrypy import wsgiserver
 from cherrypy.wsgiserver.ssl_builtin import BuiltinSSLAdapter
+from jinja2 import select_autoescape
 from jinja2.environment import Environment
 from jinja2.loaders import FileSystemLoader
 from provider.authn import make_cls_from_name
-from six.moves.urllib import parse as urlparse
 
-from oic.oauth2 import rndstr
+from oic import rndstr
 from oic.oic.provider import AuthorizationEndpoint
 from oic.oic.provider import EndSessionEndpoint
 from oic.oic.provider import Provider
@@ -135,6 +136,7 @@ def setup_endpoints(provider):
             pyoidcMiddleware(provider.endsession_endpoint))
     ]
 
+    provider.endp = endpoints
     for ep in endpoints:
         app_routing["/{}".format(ep.etype)] = ep
 
@@ -183,12 +185,13 @@ def main():
 
     # Load configuration
     with open(args.settings, "r") as f:
-        settings = yaml.load(f)
+        settings = yaml.safe_load(f)
 
     issuer = args.base.rstrip("/")
 
     template_dirs = settings["server"].get("template_dirs", "templates")
-    jinja_env = Environment(loader=FileSystemLoader(template_dirs))
+    jinja_env = Environment(loader=FileSystemLoader(template_dirs),
+                            autoescape=select_autoescape(['html']))
     authn_broker, auth_routing = setup_authentication_methods(settings["authn"],
                                                               jinja_env)
 
@@ -219,8 +222,9 @@ def main():
     with open(os.path.join(path, name), "w") as f:
         f.write(json.dumps(jwks))
 
-    provider.jwks_uri.append(
-        "{}/static/{}".format(provider.baseurl, name))
+    #TODO: I take this out and it still works, what was this for?
+    #provider.jwks_uri.append(
+    #    "{}/static/{}".format(provider.baseurl, name))
 
     # Mount the WSGI callable object (app) on the root directory
     app_routing = setup_endpoints(provider)
@@ -231,7 +235,7 @@ def main():
     routing = dict(list(auth_routing.items()) + list(app_routing.items()))
     routing["/static"] = make_static_handler(path)
     dispatcher = WSGIPathInfoDispatcher(routing)
-    server = wsgiserver.CherryPyWSGIServer(('0.0.0.0', args.port), dispatcher)
+    server = wsgiserver.CherryPyWSGIServer(('0.0.0.0', args.port), dispatcher)  # nosec
 
     # Setup SSL
     if provider.baseurl.startswith("https://"):

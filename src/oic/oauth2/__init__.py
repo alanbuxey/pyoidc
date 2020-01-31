@@ -1,13 +1,20 @@
-#!/usr/bin/env python
-from future.backports.urllib.parse import urlparse
-
 import logging
+from typing import Any  # noqa - This is used for MyPy
+from typing import Dict
+from typing import List  # noqa - This is used for MyPy
+from typing import Optional
+from typing import Tuple
+from typing import Type
+from typing import Union
+from urllib.parse import urlparse
 
 from jwkest import b64e
+from typing_extensions import Literal
 
 from oic import CC_METHOD
 from oic import OIDCONF_PATTERN
 from oic import unreserved
+from oic.exception import CommunicationError
 from oic.oauth2.base import PBase
 from oic.oauth2.exception import GrantError
 from oic.oauth2.exception import HttpError
@@ -19,31 +26,36 @@ from oic.oauth2.exception import Unsupported
 from oic.oauth2.grant import Grant
 from oic.oauth2.grant import Token
 from oic.oauth2.message import AccessTokenRequest
-from oic.oauth2.message import ROPCAccessTokenRequest
 from oic.oauth2.message import AccessTokenResponse
 from oic.oauth2.message import ASConfigurationResponse
 from oic.oauth2.message import AuthorizationErrorResponse
 from oic.oauth2.message import AuthorizationRequest
 from oic.oauth2.message import AuthorizationResponse
+from oic.oauth2.message import CCAccessTokenRequest
 from oic.oauth2.message import ErrorResponse
+from oic.oauth2.message import ExtensionTokenRequest
 from oic.oauth2.message import GrantExpired
 from oic.oauth2.message import Message
+from oic.oauth2.message import MessageFactory
 from oic.oauth2.message import NoneResponse
+from oic.oauth2.message import OauthMessageFactory
 from oic.oauth2.message import PyoidcError
 from oic.oauth2.message import RefreshAccessTokenRequest
 from oic.oauth2.message import ResourceRequest
+from oic.oauth2.message import ROPCAccessTokenRequest
 from oic.oauth2.message import TokenErrorResponse
 from oic.oauth2.message import sanitize
 from oic.oauth2.util import get_or_post
 from oic.oauth2.util import verify_header
-from oic.utils.http_util import R2C
 from oic.utils.http_util import BadRequest
 from oic.utils.http_util import Response
 from oic.utils.http_util import SeeOther
 from oic.utils.keyio import KeyJar
+from oic.utils.sdb import SessionBackend  # noqa
+from oic.utils.sdb import session_update
 from oic.utils.time_util import utc_time_sans_frac
 
-__author__ = 'rohe0002'
+__author__ = "rohe0002"
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +69,21 @@ HTTP_ARGS = ["headers", "redirections", "connection_type"]
 REQUEST2ENDPOINT = {
     "AuthorizationRequest": "authorization_endpoint",
     "AccessTokenRequest": "token_endpoint",
-    # ROPCAccessTokenRequest: "authorization_endpoint",
-    # CCAccessTokenRequest: "authorization_endpoint",
+    "ROPCAccessTokenRequest": "token_endpoint",
+    "CCAccessTokenRequest": "token_endpoint",
     "RefreshAccessTokenRequest": "token_endpoint",
-    "TokenRevocationRequest": "token_endpoint"}
+    "ExtensionTokenRequest": "token_endpoint",
+    "TokenRevocationRequest": "token_endpoint",
+}
 
 RESPONSE2ERROR = {
     "AuthorizationResponse": [AuthorizationErrorResponse, TokenErrorResponse],
-    "AccessTokenResponse": [TokenErrorResponse]
-}
+    "AccessTokenResponse": [TokenErrorResponse],
+}  # type: Dict[str, List]
 
-ENDPOINTS = ["authorization_endpoint", "token_endpoint",
-             "token_revocation_endpoint"]
+ENDPOINTS = ["authorization_endpoint", "token_endpoint", "token_revocation_endpoint"]
+
+ENCODINGS = Literal["json", "urlencoded"]
 
 
 class ExpiredToken(PyoidcError):
@@ -77,11 +92,13 @@ class ExpiredToken(PyoidcError):
 
 # =============================================================================
 
-def error_response(error, descr=None, status="400 Bad Request"):
+
+def error_response(error, descr=None, status_code=400):
     logger.error("%s" % sanitize(error))
     response = ErrorResponse(error=error, error_description=descr)
-    return Response(response.to_json(), content="application/json",
-                    status=status)
+    return Response(
+        response.to_json(), content="application/json", status_code=status_code
+    )
 
 
 def none_response(**kwargs):
@@ -93,22 +110,15 @@ def none_response(**kwargs):
     return aresp
 
 
-def error(error, descr=None, status_code=400):
-    stat_txt = R2C[400]._status
-    return error_response(error=error, descr=descr, status=stat_txt)
-
-
-def authz_error(error, descr=None, status_code=400):
+def authz_error(error, descr=None):
     response = AuthorizationErrorResponse(error=error)
     if descr:
         response["error_description"] = descr
 
-    return Response(response.to_json(), content="application/json",
-                    status="400 Bad Request")
+    return Response(response.to_json(), content="application/json", status_code=400)
 
 
-def redirect_authz_error(error, redirect_uri, descr=None, state="",
-                         return_type=None):
+def redirect_authz_error(error, redirect_uri, descr=None, state="", return_type=None):
     err = AuthorizationErrorResponse(error=error)
     if descr:
         err["error_description"] = descr
@@ -131,10 +141,11 @@ def exception_to_error_mesg(excep):
         else:
             resp = BadRequest()
     else:
-        err = ErrorResponse(error='service_error',
-                            error_description='{}:{}'.format(
-                                excep.__class__.__name__, excep.args))
-        resp = BadRequest(err.to_json(), content='application/json')
+        err = ErrorResponse(
+            error="service_error",
+            error_description="{}:{}".format(excep.__class__.__name__, excep.args),
+        )
+        resp = BadRequest(err.to_json(), content="application/json")
     return resp
 
 
@@ -147,73 +158,93 @@ def compact(qsdict):
             res[key] = val
     return res
 
+
 # =============================================================================
 
 
 class Client(PBase):
     _endpoints = ENDPOINTS
 
-    def __init__(self, client_id=None, ca_certs=None, client_authn_method=None,
-                 keyjar=None, verify_ssl=True, config=None, client_cert=None):
+    def __init__(
+        self,
+        client_id=None,
+        client_authn_method=None,
+        keyjar=None,
+        verify_ssl=True,
+        config=None,
+        client_cert=None,
+        timeout=5,
+        message_factory: Type[MessageFactory] = OauthMessageFactory,
+    ):
         """
+        Initialize the instance.
 
         :param client_id: The client identifier
-        :param ca_certs: Certificates used to verify HTTPS certificates
         :param client_authn_method: Methods that this client can use to
             authenticate itself. It's a dictionary with method names as
             keys and method classes as values.
+        :param keyjar: The keyjar for this client.
         :param verify_ssl: Whether the SSL certificate should be verified.
+        :param client_cert: A client certificate to use.
+        :param timeout: Timeout for requests library. Can be specified either as
+            a single integer or as a tuple of integers. For more details, refer to
+            ``requests`` documentation.
+        :param: message_factory: Factory for message classes, should inherit from OauthMessageFactory
         :return: Client instance
         """
+        PBase.__init__(
+            self,
+            verify_ssl=verify_ssl,
+            keyjar=keyjar,
+            client_cert=client_cert,
+            timeout=timeout,
+        )
 
-        PBase.__init__(self, ca_certs, verify_ssl=verify_ssl,
-                       client_cert=client_cert, keyjar=keyjar)
-
+        self.sso_db = None  # type: Optional[SessionBackend]
         self.client_id = client_id
         self.client_authn_method = client_authn_method
-        self.verify_ssl = verify_ssl
-        # self.secret_type = "basic "
 
-        # self.state = None
-        self.nonce = None
+        self.nonce = None  # type: Optional[str]
 
-        self.grant = {}
-        self.state2nonce = {}
+        self.message_factory = message_factory
+        self.grant = {}  # type: Dict[str, Grant]
+        self.state2nonce = {}  # type: Dict[str, str]
         # own endpoint
-        self.redirect_uris = [None]
+        self.redirect_uris = []  # type: List[str]
+        # Default behaviour
+        self.response_type = ["code"]
 
         # service endpoints
-        self.authorization_endpoint = None
-        self.token_endpoint = None
-        self.token_revocation_endpoint = None
+        self.authorization_endpoint = None  # type: Optional[str]
+        self.token_endpoint = None  # type: Optional[str]
+        self.token_revocation_endpoint = None  # type: Optional[str]
 
         self.request2endpoint = REQUEST2ENDPOINT
-        self.response2error = RESPONSE2ERROR
+        self.response2error = RESPONSE2ERROR  # type: Dict[str, List]
         self.grant_class = Grant
         self.token_class = Token
 
-        self.provider_info = {}
-        self._c_secret = None
-        self.kid = {"sig": {}, "enc": {}}
-        self.authz_req = None
+        self.provider_info = ASConfigurationResponse()  # type: Message
+        self._c_secret = ""  # type: str
+        self.kid = {"sig": {}, "enc": {}}  # type: Dict[str, Dict]
+        self.authz_req = {}  # type: Dict[str, Message]
 
         # the OAuth issuer is the URL of the authorization server's
         # configuration information location
         self.config = config or {}
         try:
-            self.issuer = self.config['issuer']
+            self.issuer = self.config["issuer"]
         except KeyError:
-            self.issuer = ''
-        self.allow = {}
-        self.provider_info = {}
+            self.issuer = ""
+        self.allow = {}  # type: Dict[str, Any]
 
     def store_response(self, clinst, text):
         pass
 
-    def get_client_secret(self):
+    def get_client_secret(self) -> str:
         return self._c_secret
 
-    def set_client_secret(self, val):
+    def set_client_secret(self, val: str):
         if not val:
             self._c_secret = ""
         else:
@@ -227,24 +258,23 @@ class Client(PBase):
 
     client_secret = property(get_client_secret, set_client_secret)
 
-    def reset(self):
-        # self.state = None
+    def reset(self) -> None:
         self.nonce = None
 
         self.grant = {}
 
         self.authorization_endpoint = None
         self.token_endpoint = None
-        self.redirect_uris = None
+        self.redirect_uris = []
 
-    def grant_from_state(self, state):
+    def grant_from_state(self, state: str) -> Optional[Grant]:
         for key, grant in self.grant.items():
             if key == state:
                 return grant
 
         return None
 
-    def _parse_args(self, request, **kwargs):
+    def _parse_args(self, request: Type[Message], **kwargs) -> Dict:
         ar_args = kwargs.copy()
 
         for prop in request.c_param.keys():
@@ -262,7 +292,7 @@ class Client(PBase):
 
         return ar_args
 
-    def _endpoint(self, endpoint, **kwargs):
+    def _endpoint(self, endpoint: str, **kwargs) -> str:
         try:
             uri = kwargs[endpoint]
             if uri:
@@ -281,20 +311,13 @@ class Client(PBase):
 
         return uri
 
-    def get_grant(self, state, **kwargs):
-        # try:
-        # _state = kwargs["state"]
-        # if not _state:
-        #         _state = self.state
-        # except KeyError:
-        #     _state = self.state
-
+    def get_grant(self, state: str, **kwargs) -> Grant:
         try:
             return self.grant[state]
         except KeyError:
             raise GrantError("No grant found for state:'%s'" % state)
 
-    def get_token(self, also_expired=False, **kwargs):
+    def get_token(self, also_expired: bool = False, **kwargs) -> Token:
         try:
             return kwargs["token"]
         except KeyError:
@@ -320,28 +343,47 @@ class Client(PBase):
         else:
             raise TokenError("Token has expired")
 
-    def construct_request(self, request, request_args=None, extra_args=None):
+    def clean_tokens(self) -> None:
+        """Clean replaced and invalid tokens."""
+        for state in self.grant:
+            grant = self.get_grant(state)
+            for token in grant.tokens:
+                if token.replaced or not token.is_valid():
+                    grant.delete_token(token)
+
+    def construct_request(
+        self, request: Type[Message], request_args=None, extra_args=None
+    ):
         if request_args is None:
             request_args = {}
 
-        # logger.debug("request_args: %s" % sanitize(request_args))
         kwargs = self._parse_args(request, **request_args)
 
         if extra_args:
             kwargs.update(extra_args)
-            # logger.debug("kwargs: %s" % sanitize(kwargs))
-        # logger.debug("request: %s" % sanitize(request))
+        logger.debug("request: %s" % sanitize(request))
         return request(**kwargs)
 
-    def construct_Message(self, request=Message, request_args=None,
-                          extra_args=None, **kwargs):
+    def construct_Message(
+        self,
+        request: Type[Message] = Message,
+        request_args=None,
+        extra_args=None,
+        **kwargs
+    ) -> Message:
 
         return self.construct_request(request, request_args, extra_args)
 
-    def construct_AuthorizationRequest(self, request=AuthorizationRequest,
-                                       request_args=None, extra_args=None,
-                                       **kwargs):
+    def construct_AuthorizationRequest(
+        self,
+        request: Type[AuthorizationRequest] = None,
+        request_args=None,
+        extra_args=None,
+        **kwargs
+    ) -> AuthorizationRequest:
 
+        if request is None:
+            request = self.message_factory.get_request_type("authorization_endpoint")
         if request_args is not None:
             try:  # change default
                 new = request_args["redirect_uri"]
@@ -359,25 +401,39 @@ class Client(PBase):
 
         return self.construct_request(request, request_args, extra_args)
 
-    def construct_AccessTokenRequest(self,
-                                     request=AccessTokenRequest,
-                                     request_args=None, extra_args=None,
-                                     **kwargs):
+    def construct_AccessTokenRequest(
+        self,
+        request: Union[
+            Type[AccessTokenRequest],
+            Type[ROPCAccessTokenRequest],
+            Type[CCAccessTokenRequest],
+            Type[ExtensionTokenRequest],
+        ] = None,
+        request_args=None,
+        extra_args=None,
+        **kwargs
+    ) -> AccessTokenRequest:
 
+        if request is None:
+            request = self.message_factory.get_request_type("token_endpoint")
         if request_args is None:
             request_args = {}
-        if request is not ROPCAccessTokenRequest:
+        if not issubclass(
+            request,
+            (ROPCAccessTokenRequest, CCAccessTokenRequest, ExtensionTokenRequest,),
+        ):
             grant = self.get_grant(**kwargs)
 
             if not grant.is_valid():
-                raise GrantExpired("Authorization Code to old %s > %s" % (
-                    utc_time_sans_frac(),
-                    grant.grant_expiration_time))
+                raise GrantExpired(
+                    "Authorization Code to old %s > %s"
+                    % (utc_time_sans_frac(), grant.grant_expiration_time)
+                )
 
             request_args["code"] = grant.code
 
         try:
-            request_args['state'] = kwargs['state']
+            request_args["state"] = kwargs["state"]
         except KeyError:
             pass
 
@@ -390,11 +446,16 @@ class Client(PBase):
             request_args["client_id"] = self.client_id
         return self.construct_request(request, request_args, extra_args)
 
-    def construct_RefreshAccessTokenRequest(self,
-                                            request=RefreshAccessTokenRequest,
-                                            request_args=None, extra_args=None,
-                                            **kwargs):
+    def construct_RefreshAccessTokenRequest(
+        self,
+        request: Type[RefreshAccessTokenRequest] = None,
+        request_args=None,
+        extra_args=None,
+        **kwargs
+    ) -> RefreshAccessTokenRequest:
 
+        if request is None:
+            request = self.message_factory.get_request_type("refresh_endpoint")
         if request_args is None:
             request_args = {}
 
@@ -409,23 +470,16 @@ class Client(PBase):
 
         return self.construct_request(request, request_args, extra_args)
 
-    # def construct_TokenRevocationRequest(self,
-    #                                      request=TokenRevocationRequest,
-    #                                      request_args=None, extra_args=None,
-    #                                      **kwargs):
-    #
-    #     if request_args is None:
-    #         request_args = {}
-    #
-    #     token = self.get_token(**kwargs)
-    #
-    #     request_args["token"] = token.access_token
-    #     return self.construct_request(request, request_args, extra_args)
+    def construct_ResourceRequest(
+        self,
+        request: Type[ResourceRequest] = None,
+        request_args=None,
+        extra_args=None,
+        **kwargs
+    ) -> ResourceRequest:
 
-    def construct_ResourceRequest(self, request=ResourceRequest,
-                                  request_args=None, extra_args=None,
-                                  **kwargs):
-
+        if request is None:
+            request = self.message_factory.get_request_type("resource_endpoint")
         if request_args is None:
             request_args = {}
 
@@ -434,14 +488,18 @@ class Client(PBase):
         request_args["access_token"] = token.access_token
         return self.construct_request(request, request_args, extra_args)
 
-    def uri_and_body(self, reqmsg, cis, method="POST", request_args=None,
-                     **kwargs):
-
+    def uri_and_body(
+        self,
+        reqmsg: Type[Message],
+        cis: Message,
+        method="POST",
+        request_args=None,
+        **kwargs
+    ) -> Tuple[str, str, Dict, Message]:
         if "endpoint" in kwargs and kwargs["endpoint"]:
             uri = kwargs["endpoint"]
         else:
-            uri = self._endpoint(self.request2endpoint[reqmsg.__name__],
-                                 **request_args)
+            uri = self._endpoint(self.request2endpoint[reqmsg.__name__], **request_args)
 
         uri, body, kwargs = get_or_post(uri, method, cis, **kwargs)
         try:
@@ -451,31 +509,37 @@ class Client(PBase):
 
         return uri, body, h_args, cis
 
-    def request_info(self, request, method="POST", request_args=None,
-                     extra_args=None, lax=False, **kwargs):
+    def request_info(
+        self,
+        request: Type[Message],
+        method="POST",
+        request_args=None,
+        extra_args=None,
+        lax=False,
+        **kwargs
+    ) -> Tuple[str, str, Dict, Message]:
 
         if request_args is None:
             request_args = {}
 
         try:
             cls = getattr(self, "construct_%s" % request.__name__)
-            cis = cls(request_args=request_args, extra_args=extra_args,
-                      **kwargs)
+            cis = cls(request_args=request_args, extra_args=extra_args, **kwargs)
         except AttributeError:
             cis = self.construct_request(request, request_args, extra_args)
 
         if self.events:
-            self.events.store('Protocol request', cis)
+            self.events.store("Protocol request", cis)
 
-        if 'nonce' in cis and 'state' in cis:
-            self.state2nonce[cis['state']] = cis['nonce']
+        if "nonce" in cis and "state" in cis:
+            self.state2nonce[cis["state"]] = cis["nonce"]
 
         cis.lax = lax
 
         if "authn_method" in kwargs:
-            h_arg = self.init_authentication_method(cis,
-                                                    request_args=request_args,
-                                                    **kwargs)
+            h_arg = self.init_authentication_method(
+                cis, request_args=request_args, **kwargs
+            )
         else:
             h_arg = None
 
@@ -485,16 +549,20 @@ class Client(PBase):
             else:
                 kwargs["headers"] = h_arg["headers"]
 
-        return self.uri_and_body(request, cis, method, request_args,
-                                 **kwargs)
+        return self.uri_and_body(request, cis, method, request_args, **kwargs)
 
-    def authorization_request_info(self, request_args=None, extra_args=None,
-                                   **kwargs):
-        return self.request_info(AuthorizationRequest, "GET",
-                                 request_args, extra_args, **kwargs)
+    def authorization_request_info(self, request_args=None, extra_args=None, **kwargs):
+        return self.request_info(
+            self.message_factory.get_request_type("authorization_endpoint"),
+            "GET",
+            request_args,
+            extra_args,
+            **kwargs
+        )
 
-    def get_urlinfo(self, info):
-        if '?' in info or '#' in info:
+    @staticmethod
+    def get_urlinfo(info: str) -> str:
+        if "?" in info or "#" in info:
             parts = urlparse(info)
             scheme, netloc, path, params, query, fragment = parts[:6]
             # either query of fragment
@@ -504,10 +572,16 @@ class Client(PBase):
                 info = fragment
         return info
 
-    def parse_response(self, response, info="", sformat="json", state="",
-                       **kwargs):
+    def parse_response(
+        self,
+        response: Type[Message],
+        info: str = "",
+        sformat: ENCODINGS = "json",
+        state: str = "",
+        **kwargs
+    ) -> Message:
         """
-        Parse a response
+        Parse a response.
 
         :param response: Response type
         :param info: The response, can be either in a JSON or an urlencoded
@@ -517,22 +591,20 @@ class Client(PBase):
         :param kwargs: Extra key word arguments
         :return: The parsed and to some extend verified response
         """
-
         _r2e = self.response2error
 
         if sformat == "urlencoded":
             info = self.get_urlinfo(info)
 
-        # if self.events:
-        #    self.events.store('Response', info)
         resp = response().deserialize(info, sformat, **kwargs)
         msg = 'Initial response parsing => "{}"'
         logger.debug(msg.format(sanitize(resp.to_dict())))
         if self.events:
-            self.events.store('Response', resp.to_dict())
+            self.events.store("Response", resp.to_dict())
 
         if "error" in resp and not isinstance(resp, ErrorResponse):
             resp = None
+            errmsgs = []  # type: List[Any]
             try:
                 errmsgs = _r2e[response.__name__]
             except KeyError:
@@ -553,10 +625,10 @@ class Client(PBase):
         else:
             kwargs["client_id"] = self.client_id
             try:
-                kwargs['iss'] = self.provider_info['issuer']
+                kwargs["iss"] = self.provider_info["issuer"]
             except (KeyError, AttributeError):
                 if self.issuer:
-                    kwargs['iss'] = self.issuer
+                    kwargs["iss"] = self.issuer
 
             if "key" not in kwargs and "keyjar" not in kwargs:
                 kwargs["keyjar"] = self.keyjar
@@ -565,7 +637,7 @@ class Client(PBase):
             verf = resp.verify(**kwargs)
 
             if not verf:
-                logger.error('Verification of the response failed')
+                logger.error("Verification of the response failed")
                 raise PyoidcError("Verification of the response failed")
             if resp.type() == "AuthorizationResponse" and "scope" not in resp:
                 try:
@@ -574,12 +646,12 @@ class Client(PBase):
                     pass
 
         if not resp:
-            logger.error('Missing or faulty response')
+            logger.error("Missing or faulty response")
             raise ResponseError("Missing or faulty response")
 
         self.store_response(resp, info)
 
-        if resp.type() in ["AuthorizationResponse", "AccessTokenResponse"]:
+        if isinstance(resp, (AuthorizationResponse, AccessTokenResponse)):
             try:
                 _state = resp["state"]
             except (AttributeError, KeyError):
@@ -593,10 +665,16 @@ class Client(PBase):
             except KeyError:
                 self.grant[_state] = self.grant_class(resp=resp)
 
+            if "id_token" in resp and self.sso_db is not None:
+                session_update(self.sso_db, _state, "sub", resp["id_token"]["sub"])
+                session_update(self.sso_db, _state, "issuer", resp["id_token"]["iss"])
+                if "sid" in resp["id_token"]:
+                    session_update(self.sso_db, _state, "smid", resp["id_token"]["sid"])
         return resp
 
-    def init_authentication_method(self, cis, authn_method, request_args=None,
-                                   http_args=None, **kwargs):
+    def init_authentication_method(
+        self, cis, authn_method, request_args=None, http_args=None, **kwargs
+    ):
 
         if http_args is None:
             http_args = {}
@@ -605,45 +683,45 @@ class Client(PBase):
 
         if authn_method:
             return self.client_authn_method[authn_method](self).construct(
-                cis, request_args, http_args, **kwargs)
+                cis, request_args, http_args, **kwargs
+            )
         else:
             return http_args
 
-    def parse_request_response(self, reqresp, response, body_type, state="",
-                               **kwargs):
+    def parse_request_response(self, reqresp, response, body_type, state="", **kwargs):
 
         if reqresp.status_code in SUCCESSFUL:
             body_type = verify_header(reqresp, body_type)
         elif reqresp.status_code in [302, 303]:  # redirect
             return reqresp
         elif reqresp.status_code == 500:
-            logger.error("(%d) %s" % (reqresp.status_code,
-                                      sanitize(reqresp.text)))
+            logger.error("(%d) %s" % (reqresp.status_code, sanitize(reqresp.text)))
             raise ParseError("ERROR: Something went wrong: %s" % reqresp.text)
         elif reqresp.status_code in [400, 401]:
             # expecting an error response
             if issubclass(response, ErrorResponse):
                 pass
         else:
-            logger.error("(%d) %s" % (reqresp.status_code,
-                                      sanitize(reqresp.text)))
-            raise HttpError("HTTP ERROR: %s [%s] on %s" % (
-                reqresp.text, reqresp.status_code, reqresp.url))
+            logger.error("(%d) %s" % (reqresp.status_code, sanitize(reqresp.text)))
+            raise HttpError(
+                "HTTP ERROR: %s [%s] on %s"
+                % (reqresp.text, reqresp.status_code, reqresp.url)
+            )
 
         if response:
-            if body_type == 'txt':
+            if body_type == "txt":
                 # no meaning trying to parse unstructured text
                 return reqresp.text
-            return self.parse_response(response, reqresp.text, body_type,
-                                       state, **kwargs)
+            return self.parse_response(
+                response, reqresp.text, body_type, state, **kwargs
+            )
 
         # could be an error response
         if reqresp.status_code in [200, 400, 401]:
-            if body_type == 'txt':
-                body_type = 'urlencoded'
+            if body_type == "txt":
+                body_type = "urlencoded"
             try:
-                err = ErrorResponse().deserialize(reqresp.message,
-                                                  method=body_type)
+                err = ErrorResponse().deserialize(reqresp.message, method=body_type)
                 try:
                     err.verify()
                 except PyoidcError:
@@ -651,24 +729,37 @@ class Client(PBase):
                 else:
                     return err
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to decode error response (%d) %s",
+                    reqresp.status_code,
+                    sanitize(reqresp.text),
+                )
 
         return reqresp
 
-    def request_and_return(self, url, response=None, method="GET", body=None,
-                           body_type="json", state="", http_args=None,
-                           **kwargs):
+    def request_and_return(
+        self,
+        url: str,
+        response: Type[Message] = None,
+        method="GET",
+        body=None,
+        body_type: ENCODINGS = "json",
+        state: str = "",
+        http_args=None,
+        **kwargs
+    ):
         """
+        Perform a request and return the response.
+
         :param url: The URL to which the request should be sent
         :param response: Response type
         :param method: Which HTTP method to use
         :param body: A message body if any
         :param body_type: The format of the body of the return message
         :param http_args: Arguments for the HTTP client
-        :return: A cls or ErrorResponse instance or the HTTP response
-            instance if no response body was expected.
+        :return: A cls or ErrorResponse instance or the HTTP response instance if no response body was expected.
         """
-
+        # FIXME: Cannot annotate return value as Message since it disrupts all other methods
         if http_args is None:
             http_args = {}
 
@@ -680,15 +771,21 @@ class Client(PBase):
         if "keyjar" not in kwargs:
             kwargs["keyjar"] = self.keyjar
 
-        return self.parse_request_response(resp, response, body_type, state,
-                                           **kwargs)
+        return self.parse_request_response(resp, response, body_type, state, **kwargs)
 
-    def do_authorization_request(self, request=AuthorizationRequest,
-                                 state="", body_type="", method="GET",
-                                 request_args=None, extra_args=None,
-                                 http_args=None,
-                                 response_cls=AuthorizationResponse,
-                                 **kwargs):
+    def do_authorization_request(
+        self,
+        state="",
+        body_type="",
+        method="GET",
+        request_args=None,
+        extra_args=None,
+        http_args=None,
+        **kwargs
+    ) -> AuthorizationResponse:
+
+        request = self.message_factory.get_request_type("authorization_endpoint")
+        response_cls = self.message_factory.get_response_type("authorization_endpoint")
 
         if state:
             try:
@@ -696,10 +793,10 @@ class Client(PBase):
             except TypeError:
                 request_args = {"state": state}
 
-        kwargs['authn_endpoint'] = 'authorization'
-        url, body, ht_args, csi = self.request_info(request, method,
-                                                    request_args, extra_args,
-                                                    **kwargs)
+        kwargs["authn_endpoint"] = "authorization"
+        url, body, ht_args, csi = self.request_info(
+            request, method, request_args, extra_args, **kwargs
+        )
 
         try:
             self.authz_req[request_args["state"]] = csi
@@ -716,31 +813,57 @@ class Client(PBase):
         except KeyError:
             algs = {}
 
-        resp = self.request_and_return(url, response_cls, method, body,
-                                       body_type, state=state,
-                                       http_args=http_args, algs=algs)
+        resp = self.request_and_return(
+            url,
+            response_cls,
+            method,
+            body,
+            body_type,
+            state=state,
+            http_args=http_args,
+            algs=algs,
+        )
 
         if isinstance(resp, Message):
-            if resp.type() in RESPONSE2ERROR["AuthorizationResponse"]:
-                resp.state = csi.state
+            # FIXME: The Message classes do not have classical attrs
+            if resp.type() in RESPONSE2ERROR["AuthorizationResponse"]:  # type: ignore
+                resp.state = csi.state  # type: ignore
 
         return resp
 
-    def do_access_token_request(self, request=AccessTokenRequest,
-                                scope="", state="", body_type="json",
-                                method="POST", request_args=None,
-                                extra_args=None, http_args=None,
-                                response_cls=AccessTokenResponse,
-                                authn_method="", **kwargs):
+    def do_access_token_request(
+        self,
+        scope: str = "",
+        state: str = "",
+        body_type: ENCODINGS = "json",
+        method="POST",
+        request_args=None,
+        extra_args=None,
+        http_args=None,
+        authn_method="",
+        **kwargs
+    ) -> AccessTokenResponse:
 
-        kwargs['authn_endpoint'] = 'token'
+        request = self.message_factory.get_request_type("token_endpoint")
+        response_cls = self.message_factory.get_response_type("token_endpoint")
+
+        if extra_args is None:
+            extra_args = {}
+        kwargs["authn_endpoint"] = "token"
+        if http_args is not None and "password" in http_args:
+            extra_args["password"] = http_args.pop("password")
+
         # method is default POST
-        url, body, ht_args, csi = self.request_info(request, method=method,
-                                                    request_args=request_args,
-                                                    extra_args=extra_args,
-                                                    scope=scope, state=state,
-                                                    authn_method=authn_method,
-                                                    **kwargs)
+        url, body, ht_args, csi = self.request_info(
+            request,
+            method=method,
+            request_args=request_args,
+            extra_args=extra_args,
+            scope=scope,
+            state=state,
+            authn_method=authn_method,
+            **kwargs
+        )
 
         if http_args is None:
             http_args = ht_args
@@ -748,83 +871,101 @@ class Client(PBase):
             http_args.update(ht_args)
 
         if self.events is not None:
-            self.events.store('request_url', url)
-            self.events.store('request_http_args', http_args)
-            self.events.store('Request', body)
+            self.events.store("request_url", url)
+            self.events.store("request_http_args", http_args)
+            self.events.store("Request", body)
 
-        logger.debug("<do_access_token> URL: %s, Body: %s" % (url,
-                                                              sanitize(body)))
+        logger.debug("<do_access_token> URL: %s, Body: %s" % (url, sanitize(body)))
         logger.debug("<do_access_token> response_cls: %s" % response_cls)
 
-        return self.request_and_return(url, response_cls, method, body,
-                                       body_type, state=state,
-                                       http_args=http_args, **kwargs)
+        return self.request_and_return(
+            url,
+            response_cls,
+            method,
+            body,
+            body_type,
+            state=state,
+            http_args=http_args,
+            **kwargs
+        )
 
-    def do_access_token_refresh(self, request=RefreshAccessTokenRequest,
-                                state="", body_type="json", method="POST",
-                                request_args=None, extra_args=None,
-                                http_args=None,
-                                response_cls=AccessTokenResponse,
-                                authn_method="", **kwargs):
+    def do_access_token_refresh(
+        self,
+        state: str = "",
+        body_type: ENCODINGS = "json",
+        method="POST",
+        request_args=None,
+        extra_args=None,
+        http_args=None,
+        authn_method="",
+        **kwargs
+    ) -> AccessTokenResponse:
+
+        request = self.message_factory.get_request_type("refresh_endpoint")
+        response_cls = self.message_factory.get_response_type("refresh_endpoint")
 
         token = self.get_token(also_expired=True, state=state, **kwargs)
-        kwargs['authn_endpoint'] = 'refresh'
-        url, body, ht_args, csi = self.request_info(request, method=method,
-                                                    request_args=request_args,
-                                                    extra_args=extra_args,
-                                                    token=token,
-                                                    authn_method=authn_method)
+        kwargs["authn_endpoint"] = "refresh"
+        url, body, ht_args, csi = self.request_info(
+            request,
+            method=method,
+            request_args=request_args,
+            extra_args=extra_args,
+            token=token,
+            authn_method=authn_method,
+        )
 
         if http_args is None:
             http_args = ht_args
         else:
             http_args.update(ht_args)
 
-        return self.request_and_return(url, response_cls, method, body,
-                                       body_type, state=state,
-                                       http_args=http_args)
+        response = self.request_and_return(
+            url, response_cls, method, body, body_type, state=state, http_args=http_args
+        )
+        if token.replaced:
+            grant = self.get_grant(state)
+            grant.delete_token(token)
+        return response
 
-    # def do_revocate_token(self, request=TokenRevocationRequest,
-    #                       scope="", state="", body_type="json", method="POST",
-    #                       request_args=None, extra_args=None, http_args=None,
-    #                       response_cls=None, authn_method=""):
-    #
-    #     url, body, ht_args, csi = self.request_info(request, method=method,
-    #                                                 request_args=request_args,
-    #                                                 extra_args=extra_args,
-    #                                                 scope=scope, state=state,
-    #                                                 authn_method=authn_method)
-    #
-    #     if http_args is None:
-    #         http_args = ht_args
-    #     else:
-    #         http_args.update(ht_args)
-    #
-    #     return self.request_and_return(url, response_cls, method, body,
-    #                                    body_type, state=state,
-    #                                    http_args=http_args)
+    def do_any(
+        self,
+        request: Type[Message],
+        endpoint="",
+        scope="",
+        state="",
+        body_type="json",
+        method="POST",
+        request_args=None,
+        extra_args=None,
+        http_args=None,
+        response: Type[Message] = None,
+        authn_method="",
+    ) -> Message:
 
-    def do_any(self, request, endpoint="", scope="", state="", body_type="json",
-               method="POST", request_args=None, extra_args=None,
-               http_args=None, response=None, authn_method=""):
-
-        url, body, ht_args, csi = self.request_info(request, method=method,
-                                                    request_args=request_args,
-                                                    extra_args=extra_args,
-                                                    scope=scope, state=state,
-                                                    authn_method=authn_method,
-                                                    endpoint=endpoint)
+        url, body, ht_args, _ = self.request_info(
+            request,
+            method=method,
+            request_args=request_args,
+            extra_args=extra_args,
+            scope=scope,
+            state=state,
+            authn_method=authn_method,
+            endpoint=endpoint,
+        )
 
         if http_args is None:
             http_args = ht_args
         else:
             http_args.update(ht_args)
 
-        return self.request_and_return(url, response, method, body, body_type,
-                                       state=state, http_args=http_args)
+        return self.request_and_return(
+            url, response, method, body, body_type, state=state, http_args=http_args
+        )
 
-    def fetch_protected_resource(self, uri, method="GET", headers=None,
-                                 state="", **kwargs):
+    def fetch_protected_resource(
+        self, uri, method="GET", headers=None, state="", **kwargs
+    ):
 
         if "token" in kwargs and kwargs["token"]:
             token = kwargs["token"]
@@ -834,7 +975,7 @@ class Client(PBase):
                 token = self.get_token(state=state, **kwargs)
             except ExpiredToken:
                 # The token is to old, refresh
-                self.do_access_token_refresh()
+                self.do_access_token_refresh(state=state)
                 token = self.get_token(state=state, **kwargs)
             request_args = {"access_token": token.access_token}
 
@@ -843,11 +984,13 @@ class Client(PBase):
 
         if "authn_method" in kwargs:
             http_args = self.init_authentication_method(
-                request_args=request_args, **kwargs)
+                request_args=request_args, **kwargs
+            )
         else:
             # If nothing defined this is the default
-            http_args = self.client_authn_method[
-                "bearer_header"](self).construct(request_args=request_args)
+            http_args = self.client_authn_method["bearer_header"](self).construct(
+                request_args=request_args
+            )
 
         headers.update(http_args["headers"])
 
@@ -856,45 +999,51 @@ class Client(PBase):
 
     def add_code_challenge(self):
         """
-        PKCE RFC 7636 support
+        PKCE RFC 7636 support.
 
         :return:
         """
         try:
-            cv_len = self.config['code_challenge']['length']
+            cv_len = self.config["code_challenge"]["length"]
         except KeyError:
             cv_len = 64  # Use default
 
         code_verifier = unreserved(cv_len)
-        _cv = code_verifier.encode()
+        _cv = code_verifier.encode("ascii")
 
         try:
-            _method = self.config['code_challenge']['method']
+            _method = self.config["code_challenge"]["method"]
         except KeyError:
-            _method = 'S256'
+            _method = "S256"
 
         try:
-            _h = CC_METHOD[_method](_cv).hexdigest()
-            code_challenge = b64e(_h.encode()).decode()
+            _h = CC_METHOD[_method](_cv).digest()
+            code_challenge = b64e(_h).decode("ascii")
         except KeyError:
-            raise Unsupported(
-                'PKCE Transformation method:{}'.format(_method))
+            raise Unsupported("PKCE Transformation method:{}".format(_method))
 
         # TODO store code_verifier
 
-        return {"code_challenge": code_challenge,
-                "code_challenge_method": _method}, code_verifier
+        return (
+            {"code_challenge": code_challenge, "code_challenge_method": _method},
+            code_verifier,
+        )
 
-    def handle_provider_config(self, pcr, issuer, keys=True, endpoints=True):
+    def handle_provider_config(
+        self,
+        pcr: ASConfigurationResponse,
+        issuer: str,
+        keys: bool = True,
+        endpoints: bool = True,
+    ) -> None:
         """
-        Deal with Provider Config Response
+        Deal with Provider Config Response.
+
         :param pcr: The ProviderConfigResponse instance
         :param issuer: The one I thought should be the issuer of the config
         :param keys: Should I deal with keys
-        :param endpoints: Should I deal with endpoints, that is store them
-        as attributes in self.
+        :param endpoints: Should I deal with endpoints, that is store them as attributes in self.
         """
-
         if "issuer" in pcr:
             _pcr_issuer = pcr["issuer"]
             if pcr["issuer"].endswith("/"):
@@ -908,15 +1057,11 @@ class Client(PBase):
                 else:
                     _issuer = issuer
 
-            try:
-                self.allow["issuer_mismatch"]
-            except KeyError:
-                try:
-                    assert _issuer == _pcr_issuer
-                except AssertionError:
-                    raise PyoidcError(
-                        "provider info issuer mismatch '%s' != '%s'" % (
-                            _issuer, _pcr_issuer))
+            if not self.allow.get("issuer_mismatch", False) and _issuer != _pcr_issuer:
+                raise PyoidcError(
+                    "provider info issuer mismatch '%s' != '%s'"
+                    % (_issuer, _pcr_issuer)
+                )
 
             self.provider_info = pcr
         else:
@@ -935,9 +1080,15 @@ class Client(PBase):
 
             self.keyjar.load_keys(pcr, _pcr_issuer)
 
-    def provider_config(self, issuer, keys=True, endpoints=True,
-                        response_cls=ASConfigurationResponse,
-                        serv_pattern=OIDCONF_PATTERN):
+    def provider_config(
+        self,
+        issuer: str,
+        keys: bool = True,
+        endpoints: bool = True,
+        serv_pattern: str = OIDCONF_PATTERN,
+    ) -> ASConfigurationResponse:
+
+        response_cls = self.message_factory.get_response_type("configuration_endpoint")
         if issuer.endswith("/"):
             _issuer = issuer[:-1]
         else:
@@ -946,35 +1097,48 @@ class Client(PBase):
         url = serv_pattern % _issuer
 
         pcr = None
-        r = self.http_request(url)
+        r = self.http_request(url, allow_redirects=True)
         if r.status_code == 200:
-            pcr = response_cls().from_json(r.text)
-        elif r.status_code == 302:
-            while r.status_code == 302:
-                r = self.http_request(r.headers["location"])
-                if r.status_code == 200:
-                    pcr = response_cls().from_json(r.text)
-                    break
+            try:
+                pcr = response_cls().from_json(r.text)
+            except Exception as e:
+                # FIXME: This should catch specific exception from `from_json()`
+                _err_txt = "Faulty provider config response: {}".format(e)
+                logger.error(sanitize(_err_txt))
+                raise ParseError(_err_txt)
+        else:
+            raise CommunicationError("Trying '%s', status %s" % (url, r.status_code))
 
-        if pcr is None:
-            raise PyoidcError("Trying '%s', status %s" % (url, r.status_code))
-
+        self.store_response(pcr, r.text)
         self.handle_provider_config(pcr, issuer, keys, endpoints)
-
         return pcr
 
 
 class Server(PBase):
-    def __init__(self, keyjar=None, ca_certs=None, verify_ssl=True,
-                 client_cert=None):
-        PBase.__init__(self, keyjar=keyjar, ca_certs=ca_certs,
-                       verify_ssl=verify_ssl, client_cert=client_cert)
+    """OAuth Server class."""
+
+    def __init__(
+        self,
+        verify_ssl: bool = True,
+        keyjar: KeyJar = None,
+        client_cert: Union[str, Tuple[str, str]] = None,
+        timeout: int = 5,
+        message_factory: Type[MessageFactory] = OauthMessageFactory,
+    ):
+        """Initialize the server."""
+        super().__init__(
+            verify_ssl=verify_ssl,
+            keyjar=keyjar,
+            client_cert=client_cert,
+            timeout=timeout,
+        )
+        self.message_factory = message_factory
 
     @staticmethod
     def parse_url_request(request, url=None, query=None):
         if url:
             parts = urlparse(url)
-            scheme, netloc, path, params, query, fragment = parts[:6]
+            query = parts.query
 
         if isinstance(query, dict):
             req = request(**query)
@@ -983,34 +1147,42 @@ class Server(PBase):
         req.verify()
         return req
 
-    def parse_authorization_request(self, request=AuthorizationRequest,
-                                    url=None, query=None):
-
+    def parse_authorization_request(
+        self, url: str = None, query: dict = None
+    ) -> AuthorizationRequest:
+        request = self.message_factory.get_request_type("authorization_endpoint")
         return self.parse_url_request(request, url, query)
 
-    def parse_jwt_request(self, request=AuthorizationRequest, txt="",
-                          keyjar="", verify=True, **kwargs):
+    def parse_jwt_request(
+        self,
+        request: Type[Message] = AuthorizationRequest,
+        txt: str = "",
+        keyjar: KeyJar = None,
+        verify: bool = True,
+        **kwargs
+    ) -> Message:
 
         if not keyjar:
             keyjar = self.keyjar
 
-        # areq = message().from_(txt, keys, verify)
-        areq = request().deserialize(txt, "jwt", keyjar=keyjar,
-                                     verify=verify, **kwargs)
+        areq = request().deserialize(txt, "jwt", keyjar=keyjar, verify=verify, **kwargs)
         if verify:
             areq.verify()
         return areq
 
-    def parse_body_request(self, request=AccessTokenRequest, body=None):
-        # req = message(reqmsg).from_urlencoded(body)
+    def parse_body_request(
+        self, request: Type[Message] = AccessTokenRequest, body: str = None
+    ):
         req = request().deserialize(body, "urlencoded")
         req.verify()
         return req
 
-    def parse_token_request(self, request=AccessTokenRequest,
-                            body=None):
+    def parse_token_request(self, body: str = None) -> AccessTokenRequest:
+        request = self.message_factory.get_request_type("token_endpoint")
         return self.parse_body_request(request, body)
 
-    def parse_refresh_token_request(self, request=RefreshAccessTokenRequest,
-                                    body=None):
+    def parse_refresh_token_request(
+        self, body: str = None
+    ) -> RefreshAccessTokenRequest:
+        request = self.message_factory.get_request_type("refresh_endpoint")
         return self.parse_body_request(request, body)

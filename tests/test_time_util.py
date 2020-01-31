@@ -1,7 +1,3 @@
-# !/usr/bin/env python
-
-# pylint: disable=missing-docstring
-
 import calendar
 import time
 from datetime import datetime
@@ -27,7 +23,7 @@ from oic.utils.time_util import time_a_while_ago
 from oic.utils.time_util import utc_time_sans_frac
 from oic.utils.time_util import valid
 
-__author__ = 'rohe0002'
+__author__ = "rohe0002"
 
 
 def test_f_quotient():
@@ -62,23 +58,21 @@ def test_modulo_2():
     for i in range(1, 13):
         assert modulo(i, 1, 13) == i
     assert modulo(13, 1, 13) == 1
-    # x = 0.123
-    # assert modulo(13+x, 1, 13) == 1+x
 
 
 def test_parse_duration():
     (sign, d) = parse_duration("P1Y3M5DT7H10M3.3S")
     assert sign == "+"
-    assert d['tm_sec'] == 3.3
-    assert d['tm_mon'] == 3
-    assert d['tm_hour'] == 7
-    assert d['tm_mday'] == 5
-    assert d['tm_year'] == 1
-    assert d['tm_min'] == 10
+    assert d["tm_sec"] == 3.3
+    assert d["tm_mon"] == 3
+    assert d["tm_hour"] == 7
+    assert d["tm_mday"] == 5
+    assert d["tm_year"] == 1
+    assert d["tm_min"] == 10
 
 
 def test_add_duration_1():
-    # 2000-01-12T12:13:14Z	P1Y3M5DT7H10M3S	2001-04-17T19:23:17Z
+    # 2000-01-12T12:13:14Z -> P1Y3M5DT7H10M3S -> 2001-04-17T19:23:17Z
     t = add_duration(str_to_time("2000-01-12T12:13:14Z"), "P1Y3M5DT7H10M3S")
     assert t.tm_year == 2001
     assert t.tm_mon == 4
@@ -174,22 +168,25 @@ def test_not_on_or_after():
 def test_parse_duration_1():
     (sign, d) = parse_duration("-P1Y3M5DT7H10M3.3S")
     assert sign == "-"
-    assert d['tm_sec'] == 3.3
-    assert d['tm_mon'] == 3
-    assert d['tm_hour'] == 7
-    assert d['tm_mday'] == 5
-    assert d['tm_year'] == 1
-    assert d['tm_min'] == 10
+    assert d["tm_sec"] == 3.3
+    assert d["tm_mon"] == 3
+    assert d["tm_hour"] == 7
+    assert d["tm_mday"] == 5
+    assert d["tm_year"] == 1
+    assert d["tm_min"] == 10
 
 
-@pytest.mark.parametrize("duration", [
-    "-P1Y-3M5DT7H10M3.3S",
-    "-P1Y3M5DU7H10M3.3S",
-    "-P1Y3M5DT",
-    "-P1Y3M5DU7H10M3.S",
-    "-P1Y3M5DT7H10MxS",
-    "-P1Y4M4DT7H10.5M3S"
-])
+@pytest.mark.parametrize(
+    "duration",
+    [
+        "-P1Y-3M5DT7H10M3.3S",
+        "-P1Y3M5DU7H10M3.3S",
+        "-P1Y3M5DT",
+        "-P1Y3M5DU7H10M3.S",
+        "-P1Y3M5DT7H10MxS",
+        "-P1Y4M4DT7H10.5M3S",
+    ],
+)
 def test_parse_duration_error(duration):
     with pytest.raises(TimeUtilError):
         parse_duration(duration)
@@ -218,19 +215,13 @@ def test_shift_time():
 
 
 def test_str_to_time_str_error():
-    with pytest.raises(AttributeError):
+    with pytest.raises(TimeUtilError):
         str_to_time("2000-01-12T00:00:00ZABC")
 
 
 def test_str_to_time_1():
     t = str_to_time("")
     assert t == 0
-
-
-# def test_utc_time_sans_frac():
-#     t1 = utc_time_sans_frac()
-#     t2 = int("%d" % time.time())
-#     assert t1 != t2
 
 
 def test_before_0():

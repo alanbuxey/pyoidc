@@ -1,8 +1,11 @@
 language: python
+dist: xenial
+
+sudo: required
+services:
+    docker
 
 python: 3.6
-
-sudo: false
 
 addons:
   apt:
@@ -10,22 +13,43 @@ addons:
     - libffi-dev
     - libsasl2-dev
     - libldap2-dev
-
-env:
- - TOX_ENV=py27
- - TOX_ENV=py34
- - TOX_ENV=py36
- - TOX_ENV=docs
- - TOX_ENV=quality
+  hosts:
+     op-test
+     rp-test
+     op
 
 install:
   - pip install tox
 
-script:
-  - tox -e coverage-erase,$TOX_ENV
+env:
+   - TOXENV=py36
+   - TOXENV=quality
+   - TOXENV=docs
 
-after_success:
-  - tox -e coveralls
+script:
+  - tox -e $TOXENV
+
+# Everything behaves under python 3.6 except python3.5
+matrix:
+  include:
+    - python: 3.5
+      env: TOXENV=py35
+    # Add python 3.7
+    - python: 3.7
+      env: TOXENV=py37
+    # Add python 3.8
+    - python: 3.8
+      env: TOXENV=py38
+    - install:
+        - docker-compose -f docker/docker-compose.yml up -d
+      script:
+        - docker build docker/integration_tests -t oidctest-local
+        - docker run --net=host --name=oidctest-it -d oidctest-local
+        - docker container start oidctest-it -a
+    - language: ruby
+      rvm: 2.4.1
+      install: gem install awesome_bot
+      script: awesome_bot CHANGELOG.md
 
 notifications:
   email: false

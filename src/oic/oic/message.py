@@ -1,15 +1,18 @@
-# encoding: utf-8
-from future.backports.urllib.parse import urlparse
-
 import inspect
 import json
 import logging
 import sys
 import time
-import urllib
+import warnings
+from typing import Dict  # noqa
+from typing import List  # noqa
+from urllib.parse import urlencode
+from urllib.parse import urlparse
 
-import six
 from jwkest import jws
+from jwkest.jwe import JWEException
+from jwkest.jwe import factory as JWE_factory
+from jwkest.jwt import JWT
 
 from oic.exception import InvalidRequest
 from oic.exception import IssuerMismatch
@@ -27,13 +30,17 @@ from oic.oauth2.message import SINGLE_OPTIONAL_JSON
 from oic.oauth2.message import SINGLE_OPTIONAL_STRING
 from oic.oauth2.message import SINGLE_REQUIRED_STRING
 from oic.oauth2.message import Message
+from oic.oauth2.message import MessageFactory
+from oic.oauth2.message import MessageTuple
 from oic.oauth2.message import MissingRequiredAttribute
 from oic.oauth2.message import MissingRequiredValue
 from oic.oauth2.message import NotAllowedValue
+from oic.oauth2.message import ParamDefinition
 from oic.oauth2.message import SchemeError
 from oic.utils import time_util
+from oic.utils.time_util import utc_time_sans_frac
 
-__author__ = 'rohe0002'
+__author__ = "rohe0002"
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +98,10 @@ def json_rest(val, sformat=None, lev=0):
 
 
 # value type, required, serializer, deserializer, null value allowed
-SINGLE_OPTIONAL_BOOLEAN = (bool, False, None, None, False)
-SINGLE_OPTIONAL_JSON_WN = (dict, False, json_ser, json_deser, True)
-SINGLE_OPTIONAL_JSON_CONV = (dict, False, json_conv, json_rest, True)
-SINGLE_REQUIRED_INT = (int, True, None, None, False)
+SINGLE_OPTIONAL_BOOLEAN = ParamDefinition(bool, False, None, None, False)
+SINGLE_OPTIONAL_JSON_WN = ParamDefinition(dict, False, json_ser, json_deser, True)
+SINGLE_OPTIONAL_JSON_CONV = ParamDefinition(dict, False, json_conv, json_rest, True)
+SINGLE_REQUIRED_INT = ParamDefinition(int, True, None, None, False)
 
 
 def idtoken_deser(val, sformat="urlencoded"):
@@ -102,24 +109,9 @@ def idtoken_deser(val, sformat="urlencoded"):
     return IdToken().deserialize(val, "jwt")
 
 
-# def idtokenclaim_deser(val, sformat="urlencoded"):
-#     if sformat in ["dict", "json"]:
-#         if not isinstance(val, basestring):
-#             val = json.dumps(val)
-#             sformat = "json"
-#     return IDTokenClaim().deserialize(val, sformat)
-#
-#
-# def userinfo_deser(val, sformat="urlencoded"):
-#     if sformat in ["dict", "json"]:
-#         if not isinstance(val, basestring):
-#             val = json.dumps(val)
-#             sformat = "json"
-#     return UserInfoClaim().deserialize(val, sformat)
-
 def address_deser(val, sformat="urlencoded"):
     if sformat in ["dict", "json"]:
-        if not isinstance(val, six.string_types):
+        if not isinstance(val, str):
             val = json.dumps(val)
             sformat = "json"
         elif sformat == "dict":
@@ -129,7 +121,7 @@ def address_deser(val, sformat="urlencoded"):
 
 def claims_deser(val, sformat="urlencoded"):
     if sformat in ["dict", "json"]:
-        if not isinstance(val, six.string_types):
+        if not isinstance(val, str):
             val = json.dumps(val)
             sformat = "json"
     return Claims().deserialize(val, sformat)
@@ -137,7 +129,7 @@ def claims_deser(val, sformat="urlencoded"):
 
 def message_deser(val, sformat="urlencoded"):
     if sformat in ["dict", "json"]:
-        if not isinstance(val, six.string_types):
+        if not isinstance(val, str):
             val = json.dumps(val)
             sformat = "json"
     return Message().deserialize(val, sformat)
@@ -145,7 +137,7 @@ def message_deser(val, sformat="urlencoded"):
 
 def msg_ser(inst, sformat, lev=0):
     if sformat in ["urlencoded", "json"]:
-        if isinstance(inst, dict) or isinstance(inst, Message):
+        if isinstance(inst, Message):
             res = inst.serialize(sformat, lev)
         else:
             res = inst
@@ -154,7 +146,7 @@ def msg_ser(inst, sformat, lev=0):
             res = inst.serialize(sformat, lev)
         elif isinstance(inst, dict):
             res = inst
-        elif isinstance(inst, six.string_types):  # Iff ID Token
+        elif isinstance(inst, str):  # Iff ID Token
             res = inst
         else:
             raise MessageException("Wrong type: %s" % type(inst))
@@ -178,7 +170,7 @@ def msg_ser_json(inst, sformat="json", lev=0):
             raise MessageException("Wrong type: %s" % type(inst))
     else:
         sformat = "json"
-        if isinstance(inst, dict) or isinstance(inst, Message):
+        if isinstance(inst, Message):
             res = inst.serialize(sformat, lev)
         else:
             res = inst
@@ -192,7 +184,7 @@ def msg_list_ser(insts, sformat, lev=0):
 
 def claims_ser(val, sformat="urlencoded", lev=0):
     # everything in c_extension
-    if isinstance(val, six.string_types):
+    if isinstance(val, str):
         item = val
     elif isinstance(val, list):
         item = val[0]
@@ -203,7 +195,10 @@ def claims_ser(val, sformat="urlencoded", lev=0):
         return item.serialize(method=sformat, lev=lev + 1)
 
     if sformat == "urlencoded":
-        res = urllib.urlencode(item)
+        assert isinstance(  # nosec
+            item, dict
+        )  # We cannot urlencode anything else than Mapping
+        res = urlencode(item)
     elif sformat == "json":
         if lev:
             res = item
@@ -222,7 +217,7 @@ def claims_ser(val, sformat="urlencoded", lev=0):
 
 def registration_request_deser(val, sformat="urlencoded"):
     if sformat in ["dict", "json"]:
-        if not isinstance(val, six.string_types):
+        if not isinstance(val, str):
             val = json.dumps(val)
             sformat = "json"
     return RegistrationRequest().deserialize(val, sformat)
@@ -233,33 +228,35 @@ def claims_request_deser(val, sformat="json"):
     if sformat == "urlencoded":
         sformat = "json"
     if sformat in ["dict", "json"]:
-        if not isinstance(val, six.string_types):
+        if not isinstance(val, str):
             val = json.dumps(val)
             sformat = "json"
     return ClaimsRequest().deserialize(val, sformat)
 
 
-OPTIONAL_ADDRESS = (Message, False, msg_ser, address_deser, False)
-OPTIONAL_LOGICAL = (bool, False, None, None, False)
-OPTIONAL_MULTIPLE_Claims = (Message, False, claims_ser, claims_deser, False)
-# SINGLE_OPTIONAL_USERINFO_CLAIM = (Message, False, msg_ser, userinfo_deser)
-# SINGLE_OPTIONAL_ID_TOKEN_CLAIM = (Message, False, msg_ser, idtokenclaim_deser)
+OPTIONAL_ADDRESS = ParamDefinition(Message, False, msg_ser, address_deser, False)
+OPTIONAL_LOGICAL = ParamDefinition(bool, False, None, None, False)
+OPTIONAL_MULTIPLE_Claims = ParamDefinition(
+    Message, False, claims_ser, claims_deser, False
+)
 
-SINGLE_OPTIONAL_IDTOKEN = (six.string_types, False, msg_ser, None, False)
+SINGLE_OPTIONAL_IDTOKEN = ParamDefinition(str, False, msg_ser, None, False)
 
-SINGLE_OPTIONAL_REGISTRATION_REQUEST = (Message, False, msg_ser,
-                                        registration_request_deser, False)
-SINGLE_OPTIONAL_CLAIMSREQ = (Message, False, msg_ser_json, claims_request_deser,
-                             False)
+SINGLE_OPTIONAL_REGISTRATION_REQUEST = ParamDefinition(
+    Message, False, msg_ser, registration_request_deser, False
+)
+SINGLE_OPTIONAL_CLAIMSREQ = ParamDefinition(
+    Message, False, msg_ser_json, claims_request_deser, False
+)
 
-OPTIONAL_MESSAGE = (Message, False, msg_ser, message_deser, False)
-REQUIRED_MESSAGE = (Message, True, msg_ser, message_deser, False)
+OPTIONAL_MESSAGE = ParamDefinition(Message, False, msg_ser, message_deser, False)
+REQUIRED_MESSAGE = ParamDefinition(Message, True, msg_ser, message_deser, False)
 
 # ----------------------------------------------------------------------------
 
 
 SCOPE_CHARSET = []
-for char in ['\x21', ('\x23', '\x5b'), ('\x5d', '\x7E')]:
+for char in ["\x21", ("\x23", "\x5b"), ("\x5d", "\x7E")]:
     if isinstance(char, tuple):
         c = char[0]
         while c <= char[1]:
@@ -275,7 +272,68 @@ def check_char_set(string, allowed):
             raise NotAllowedValue("'%c' not in the allowed character set" % c)
 
 
+TOKEN_VERIFY_ARGS = ["key", "keyjar", "algs", "sender"]
+
+
+def verify_id_token(instance, check_hash=False, **kwargs):
+    # Try to decode the JWT, checks the signature
+    args = {}
+    for arg in TOKEN_VERIFY_ARGS:
+        try:
+            args[arg] = kwargs[arg]
+        except KeyError:
+            pass
+
+    _jws = str(instance["id_token"])
+
+    # It can be encrypted, so try to decrypt first
+    _jwe = JWE_factory(_jws)
+    if _jwe is not None:
+        try:
+            _jws = _jwe.decrypt(keys=kwargs["keyjar"].get_decrypt_key())
+        except JWEException as err:
+            raise VerificationError("Could not decrypt id_token", err)
+    _packer = JWT()
+    _body = _packer.unpack(_jws).payload()
+
+    if "keyjar" in kwargs:
+        try:
+            if _body["iss"] not in kwargs["keyjar"]:
+                raise ValueError("Unknown issuer")
+        except KeyError:
+            raise MissingRequiredAttribute("iss")
+
+    if _jwe is not None:
+        # Use the original encrypted token to set correct headers
+        idt = IdToken().from_jwt(str(instance["id_token"]), **args)
+    else:
+        idt = IdToken().from_jwt(_jws, **args)
+    if not idt.verify(**kwargs):
+        raise VerificationError("Could not verify id_token", idt)
+
+    if check_hash:
+        _alg = idt.jws_header["alg"]
+        # What if _alg == 'none'
+
+        hfunc = "HS" + _alg[-3:]
+
+        if "access_token" in instance:
+            if "at_hash" not in idt:
+                raise MissingRequiredAttribute("Missing at_hash property", idt)
+            if idt["at_hash"] != jws.left_hash(instance["access_token"], hfunc):
+                raise AtHashError("Failed to verify access_token hash", idt)
+
+        if "code" in instance:
+            if "c_hash" not in idt:
+                raise MissingRequiredAttribute("Missing c_hash property", idt)
+            if idt["c_hash"] != jws.left_hash(instance["code"], hfunc):
+                raise CHashError("Failed to verify code hash", idt)
+
+    return idt
+
+
 # -----------------------------------------------------------------------------
+
 
 class RefreshAccessTokenRequest(message.RefreshAccessTokenRequest):
     pass
@@ -290,45 +348,32 @@ class AccessTokenResponse(message.AccessTokenResponse):
     c_param.update({"id_token": SINGLE_OPTIONAL_STRING})
 
     def verify(self, **kwargs):
-        super(AccessTokenResponse, self).verify(**kwargs)
+        super().verify(**kwargs)
         if "id_token" in self:
-            # Try to decode the JWT, checks the signature
-            args = {}
-            for arg in ["key", "keyjar", "algs", "sender"]:
-                try:
-                    args[arg] = kwargs[arg]
-                except KeyError:
-                    pass
-            idt = IdToken().from_jwt(str(self["id_token"]), **args)
-            if not idt.verify(**kwargs):
-                return False
-
-            # replace the JWT with the IdToken instance
-            self["id_token"] = idt
+            # replace the JWT with the verified IdToken instance
+            self["id_token"] = verify_id_token(self, **kwargs)
 
         return True
 
 
 class UserInfoRequest(Message):
-    c_param = {
-        "access_token": SINGLE_OPTIONAL_STRING,
-    }
+    c_param = {"access_token": SINGLE_OPTIONAL_STRING}
 
 
-class AuthorizationResponse(message.AuthorizationResponse,
-                            message.AccessTokenResponse):
+class AuthorizationResponse(message.AuthorizationResponse, message.AccessTokenResponse):
     c_param = message.AuthorizationResponse.c_param.copy()
     c_param.update(message.AccessTokenResponse.c_param)
-    c_param.update({
-        "code": SINGLE_OPTIONAL_STRING,
-        # "nonce": SINGLE_OPTIONAL_STRING,
-        "access_token": SINGLE_OPTIONAL_STRING,
-        "token_type": SINGLE_OPTIONAL_STRING,
-        "id_token": SINGLE_OPTIONAL_IDTOKEN,
-    })
+    c_param.update(
+        {
+            "code": SINGLE_OPTIONAL_STRING,
+            "access_token": SINGLE_OPTIONAL_STRING,
+            "token_type": SINGLE_OPTIONAL_STRING,
+            "id_token": SINGLE_OPTIONAL_IDTOKEN,
+        }
+    )
 
     def verify(self, **kwargs):
-        super(AuthorizationResponse, self).verify(**kwargs)
+        super().verify(**kwargs)
 
         if "aud" in self:
             if "client_id" in kwargs:
@@ -337,62 +382,30 @@ class AuthorizationResponse(message.AuthorizationResponse,
                     return False
 
         if "id_token" in self:
-            # Try to decode the JWT, checks the signature
-            args = {}
-            for arg in ["key", "keyjar", "algs", "sender"]:
-                try:
-                    args[arg] = kwargs[arg]
-                except KeyError:
-                    pass
-            idt = IdToken().from_jwt(str(self["id_token"]), **args)
-            if not idt.verify(**kwargs):
-                raise VerificationError("Could not verify id_token", idt)
+            self["id_token"] = verify_id_token(self, check_hash=True, **kwargs)
 
-            _alg = idt.jws_header["alg"]
-            # What if _alg == 'none'
+        if "access_token" in self:
+            if "token_type" not in self:
+                raise MissingRequiredValue("Missing token_type parameter", self)
 
-            hfunc = "HS" + _alg[-3:]
-
-            if "access_token" in self:
-                try:
-                    assert "at_hash" in idt
-                except AssertionError:
-                    raise MissingRequiredAttribute("Missing at_hash property",
-                                                   idt)
-                try:
-                    assert idt["at_hash"] == jws.left_hash(
-                        self["access_token"], hfunc)
-                except AssertionError:
-                    raise AtHashError(
-                        "Failed to verify access_token hash", idt)
-
-            if "code" in self:
-                try:
-                    assert "c_hash" in idt
-                except AssertionError:
-                    raise MissingRequiredAttribute("Missing c_hash property",
-                                                   idt)
-                try:
-                    assert idt["c_hash"] == jws.left_hash(self["code"], hfunc)
-                except AssertionError:
-                    raise CHashError("Failed to verify code hash", idt)
-
-            self["id_token"] = idt
         return True
 
 
 class AuthorizationErrorResponse(message.AuthorizationErrorResponse):
-    c_allowed_values = message.AuthorizationErrorResponse.c_allowed_values \
-        .copy()
-    c_allowed_values["error"].extend(["interaction_required",
-                                      "login_required",
-                                      "session_selection_required",
-                                      "consent_required",
-                                      "invalid_request_uri",
-                                      "invalid_request_object",
-                                      "registration_not_supported",
-                                      "request_not_supported",
-                                      "request_uri_not_supported"])
+    c_allowed_values = message.AuthorizationErrorResponse.c_allowed_values.copy()
+    c_allowed_values["error"].extend(
+        [
+            "interaction_required",
+            "login_required",
+            "session_selection_required",
+            "consent_required",
+            "invalid_request_uri",
+            "invalid_request_object",
+            "registration_not_supported",
+            "request_not_supported",
+            "request_uri_not_supported",
+        ]
+    )
 
 
 class AuthorizationRequest(message.AuthorizationRequest):
@@ -414,26 +427,30 @@ class AuthorizationRequest(message.AuthorizationRequest):
             "registration": SINGLE_OPTIONAL_JSON,
             "request": SINGLE_OPTIONAL_STRING,
             "request_uri": SINGLE_OPTIONAL_STRING,
-            # "session_state": SINGLE_OPTIONAL_STRING,
             "response_mode": SINGLE_OPTIONAL_STRING,
         }
     )
     c_allowed_values = message.AuthorizationRequest.c_allowed_values.copy()
-    c_allowed_values.update({
-        "display": ["page", "popup", "touch", "wap"],
-        "prompt": ["none", "login", "consent", "select_account"]
-    })
+    c_allowed_values.update(
+        {
+            "display": ["page", "popup", "touch", "wap"],
+            "prompt": ["none", "login", "consent", "select_account"],
+        }
+    )
 
     def verify(self, **kwargs):
-        """Authorization Request parameters that are OPTIONAL in the OAuth 2.0
+        """
+        Check that the request is valid.
+
+        Authorization Request parameters that are OPTIONAL in the OAuth 2.0
         specification MAY be included in the OpenID Request Object without also
         passing them as OAuth 2.0 Authorization Request parameters, with one
         exception: The scope parameter MUST always be present in OAuth 2.0
         Authorization Request parameters.
         All parameter values that are present both in the OAuth 2.0
-        Authorization Request and in the OpenID Request Object MUST exactly
-        match."""
-        super(AuthorizationRequest, self).verify(**kwargs)
+        Authorization Request and in the OpenID Request Object MUST exactly match.
+        """
+        super().verify(**kwargs)
 
         args = {}
         for arg in ["key", "keyjar", "opponent_id", "sender"]:
@@ -446,20 +463,20 @@ class AuthorizationRequest(message.AuthorizationRequest):
             args["opponent_id"] = self["client_id"]
 
         if "request" in self:
-            if isinstance(self["request"], six.string_types):
+            if isinstance(self["request"], str):
                 # Try to decode the JWT, checks the signature
                 oidr = OpenIDRequest().from_jwt(str(self["request"]), **args)
 
                 # verify that nothing is change in the original message
                 for key, val in oidr.items():
-                    if key in self:
-                        assert self[key] == val
+                    if key in self and self[key] != val:
+                        raise AssertionError()
 
                 # replace the JWT with the parsed and verified instance
                 self["request"] = oidr
 
         if "id_token_hint" in self:
-            if isinstance(self["id_token_hint"], six.string_types):
+            if isinstance(self["id_token_hint"], str):
                 idt = IdToken().from_jwt(str(self["id_token_hint"]), **args)
                 self["id_token_hint"] = idt
 
@@ -480,58 +497,66 @@ class AuthorizationRequest(message.AuthorizationRequest):
 
         if "prompt" in self:
             if "none" in self["prompt"] and len(self["prompt"]) > 1:
-                raise InvalidRequest("prompt none combined with other value",
-                                     self)
+                raise InvalidRequest("prompt none combined with other value", self)
 
         return True
 
 
 class AccessTokenRequest(message.AccessTokenRequest):
     c_param = message.AccessTokenRequest.c_param.copy()
-    c_param.update({"client_assertion_type": SINGLE_OPTIONAL_STRING,
-                    "client_assertion": SINGLE_OPTIONAL_STRING})
+    c_param.update(
+        {
+            "client_assertion_type": SINGLE_OPTIONAL_STRING,
+            "client_assertion": SINGLE_OPTIONAL_STRING,
+        }
+    )
     c_default = {"grant_type": "authorization_code"}
     c_allowed_values = {
         "client_assertion_type": [
-            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"],
+            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+        ]
     }
 
 
 class AddressClaim(Message):
-    c_param = {"formatted": SINGLE_OPTIONAL_STRING,
-               "street_address": SINGLE_OPTIONAL_STRING,
-               "locality": SINGLE_OPTIONAL_STRING,
-               "region": SINGLE_OPTIONAL_STRING,
-               "postal_code": SINGLE_OPTIONAL_STRING,
-               "country": SINGLE_OPTIONAL_STRING}
+    c_param = {
+        "formatted": SINGLE_OPTIONAL_STRING,
+        "street_address": SINGLE_OPTIONAL_STRING,
+        "locality": SINGLE_OPTIONAL_STRING,
+        "region": SINGLE_OPTIONAL_STRING,
+        "postal_code": SINGLE_OPTIONAL_STRING,
+        "country": SINGLE_OPTIONAL_STRING,
+    }
 
 
 class OpenIDSchema(Message):
-    c_param = {"sub": SINGLE_REQUIRED_STRING,
-               "name": SINGLE_OPTIONAL_STRING,
-               "given_name": SINGLE_OPTIONAL_STRING,
-               "family_name": SINGLE_OPTIONAL_STRING,
-               "middle_name": SINGLE_OPTIONAL_STRING,
-               "nickname": SINGLE_OPTIONAL_STRING,
-               "preferred_username": SINGLE_OPTIONAL_STRING,
-               "profile": SINGLE_OPTIONAL_STRING,
-               "picture": SINGLE_OPTIONAL_STRING,
-               "website": SINGLE_OPTIONAL_STRING,
-               "email": SINGLE_OPTIONAL_STRING,
-               "email_verified": SINGLE_OPTIONAL_BOOLEAN,
-               "gender": SINGLE_OPTIONAL_STRING,
-               "birthdate": SINGLE_OPTIONAL_STRING,
-               "zoneinfo": SINGLE_OPTIONAL_STRING,
-               "locale": SINGLE_OPTIONAL_STRING,
-               "phone_number": SINGLE_OPTIONAL_STRING,
-               "phone_number_verified": SINGLE_OPTIONAL_BOOLEAN,
-               "address": OPTIONAL_ADDRESS,
-               "updated_at": SINGLE_OPTIONAL_INT,
-               "_claim_names": OPTIONAL_MESSAGE,
-               "_claim_sources": OPTIONAL_MESSAGE}
+    c_param = {
+        "sub": SINGLE_REQUIRED_STRING,
+        "name": SINGLE_OPTIONAL_STRING,
+        "given_name": SINGLE_OPTIONAL_STRING,
+        "family_name": SINGLE_OPTIONAL_STRING,
+        "middle_name": SINGLE_OPTIONAL_STRING,
+        "nickname": SINGLE_OPTIONAL_STRING,
+        "preferred_username": SINGLE_OPTIONAL_STRING,
+        "profile": SINGLE_OPTIONAL_STRING,
+        "picture": SINGLE_OPTIONAL_STRING,
+        "website": SINGLE_OPTIONAL_STRING,
+        "email": SINGLE_OPTIONAL_STRING,
+        "email_verified": SINGLE_OPTIONAL_BOOLEAN,
+        "gender": SINGLE_OPTIONAL_STRING,
+        "birthdate": SINGLE_OPTIONAL_STRING,
+        "zoneinfo": SINGLE_OPTIONAL_STRING,
+        "locale": SINGLE_OPTIONAL_STRING,
+        "phone_number": SINGLE_OPTIONAL_STRING,
+        "phone_number_verified": SINGLE_OPTIONAL_BOOLEAN,
+        "address": OPTIONAL_ADDRESS,
+        "updated_at": SINGLE_OPTIONAL_INT,
+        "_claim_names": OPTIONAL_MESSAGE,
+        "_claim_sources": OPTIONAL_MESSAGE,
+    }
 
     def verify(self, **kwargs):
-        super(OpenIDSchema, self).verify(**kwargs)
+        super().verify(**kwargs)
 
         if "birthdate" in self:
             # Either YYYY-MM-DD or just YYYY or 0000-MM-DD
@@ -584,24 +609,31 @@ class RegistrationRequest(Message):
         "default_acr_values": OPTIONAL_LIST_OF_STRINGS,
         "initiate_login_uri": SINGLE_OPTIONAL_STRING,
         "request_uris": OPTIONAL_LIST_OF_STRINGS,
-        # "client_id": SINGLE_OPTIONAL_STRING,
-        # "client_secret": SINGLE_OPTIONAL_STRING,
-        # "access_token": SINGLE_OPTIONAL_STRING,
         "post_logout_redirect_uris": OPTIONAL_LIST_OF_STRINGS,
+        "frontchannel_logout_uri": SINGLE_OPTIONAL_STRING,
+        "frontchannel_logout_session_required": OPTIONAL_LOGICAL,
+        "backchannel_logout_uri": SINGLE_OPTIONAL_STRING,
+        "backchannel_logout_session_required": OPTIONAL_LOGICAL,
     }
     c_default = {"application_type": "web", "response_types": ["code"]}
-    c_allowed_values = {"application_type": ["native", "web"],
-                        "subject_type": ["public", "pairwise"]}
+    c_allowed_values = {
+        "application_type": ["native", "web"],
+        "subject_type": ["public", "pairwise"],
+    }
 
     def verify(self, **kwargs):
-        super(RegistrationRequest, self).verify(**kwargs)
+        super().verify(**kwargs)
 
-        if "initiate_login_uri" in self:
-            assert self["initiate_login_uri"].startswith("https:")
+        if "initiate_login_uri" in self and not self["initiate_login_uri"].startswith(
+            "https:"
+        ):
+            raise AssertionError()
 
-        for param in ["request_object_encryption",
-                      "id_token_encrypted_response",
-                      "userinfo_encrypted_response"]:
+        for param in [
+            "request_object_encryption",
+            "id_token_encrypted_response",
+            "userinfo_encrypted_response",
+        ]:
             alg_param = "%s_alg" % param
             enc_param = "%s_enc" % param
             if alg_param in self:
@@ -609,19 +641,21 @@ class RegistrationRequest(Message):
                     self[enc_param] = "A128CBC-HS256"
 
             # both or none
-            if enc_param in self:
-                assert alg_param in self
+            if enc_param in self and alg_param not in self:
+                raise AssertionError()
 
-        if "token_endpoint_auth_signing_alg" in self:
-            assert self["token_endpoint_auth_signing_alg"] != "none"
+        if (
+            "token_endpoint_auth_signing_alg" in self
+            and self["token_endpoint_auth_signing_alg"] == "none"
+        ):
+            raise AssertionError()
 
         return True
 
 
 class RegistrationResponse(Message):
-    """
-    Response to client_register registration requests
-    """
+    """Response to client_register registration requests."""
+
     c_param = {
         "client_id": SINGLE_REQUIRED_STRING,
         "client_secret": SINGLE_OPTIONAL_STRING,
@@ -634,6 +668,8 @@ class RegistrationResponse(Message):
 
     def verify(self, **kwargs):
         """
+        Verify that the response is valid.
+
         Implementations MUST either return both a Client Configuration Endpoint
         and a Registration Access Token or neither of them.
         :param kwargs:
@@ -644,44 +680,53 @@ class RegistrationResponse(Message):
         has_reg_uri = "registration_client_uri" in self
         has_reg_at = "registration_access_token" in self
         if has_reg_uri != has_reg_at:
-            raise VerificationError((
-                "Only one of registration_client_uri"
-                " and registration_access_token present"), self)
+            raise VerificationError(
+                (
+                    "Only one of registration_client_uri"
+                    " and registration_access_token present"
+                ),
+                self,
+            )
 
         return True
 
 
 class ClientRegistrationErrorResponse(message.ErrorResponse):
-    c_allowed_values = {"error": ["invalid_redirect_uri",
-                                  "invalid_client_metadata",
-                                  "invalid_configuration_parameter"]}
+    c_allowed_values = {
+        "error": [
+            "invalid_redirect_uri",
+            "invalid_client_metadata",
+            "invalid_configuration_parameter",
+        ]
+    }
 
 
 class IdToken(OpenIDSchema):
     c_param = OpenIDSchema.c_param.copy()
-    c_param.update({
-        "iss": SINGLE_REQUIRED_STRING,
-        "sub": SINGLE_REQUIRED_STRING,
-        "aud": REQUIRED_LIST_OF_STRINGS,  # Array of strings or string
-        "exp": SINGLE_REQUIRED_INT,
-        "iat": SINGLE_REQUIRED_INT,
-        "auth_time": SINGLE_OPTIONAL_INT,
-        "nonce": SINGLE_OPTIONAL_STRING,
-        "at_hash": SINGLE_OPTIONAL_STRING,
-        "c_hash": SINGLE_OPTIONAL_STRING,
-        "acr": SINGLE_OPTIONAL_STRING,
-        "amr": OPTIONAL_LIST_OF_STRINGS,
-        "azp": SINGLE_OPTIONAL_STRING,
-        "sub_jwk": SINGLE_OPTIONAL_STRING
-    })
+    c_param.update(
+        {
+            "iss": SINGLE_REQUIRED_STRING,
+            "sub": SINGLE_REQUIRED_STRING,
+            "aud": REQUIRED_LIST_OF_STRINGS,  # Array of strings or string
+            "exp": SINGLE_REQUIRED_INT,
+            "iat": SINGLE_REQUIRED_INT,
+            "auth_time": SINGLE_OPTIONAL_INT,
+            "nonce": SINGLE_OPTIONAL_STRING,
+            "at_hash": SINGLE_OPTIONAL_STRING,
+            "c_hash": SINGLE_OPTIONAL_STRING,
+            "acr": SINGLE_OPTIONAL_STRING,
+            "amr": OPTIONAL_LIST_OF_STRINGS,
+            "azp": SINGLE_OPTIONAL_STRING,
+            "sub_jwk": SINGLE_OPTIONAL_STRING,
+        }
+    )
 
     def verify(self, **kwargs):
         super(IdToken, self).verify(**kwargs)
 
         try:
-            if kwargs['iss'] != self['iss']:
-                raise IssuerMismatch(
-                    '{} != {}'.format(kwargs['iss'], self['iss']))
+            if kwargs["iss"] != self["iss"]:
+                raise IssuerMismatch("{} != {}".format(kwargs["iss"], self["iss"]))
         except KeyError:
             pass
 
@@ -690,73 +735,88 @@ class IdToken(OpenIDSchema):
                 # check that I'm among the recipients
                 if kwargs["client_id"] not in self["aud"]:
                     raise NotForMe(
-                        "{} not in aud:{}".format(kwargs["client_id"],
-                                                  self["aud"]), self)
+                        "{} not in aud:{}".format(kwargs["client_id"], self["aud"]),
+                        self,
+                    )
 
             # Then azp has to be present and be one of the aud values
             if len(self["aud"]) > 1:
-                try:
-                    assert "azp" in self
-                except AssertionError:
+                if "azp" not in self:
                     raise VerificationError("azp missing", self)
-                else:
-                    try:
-                        assert self["azp"] in self["aud"]
-                    except AssertionError:
-                        raise VerificationError(
-                            "Mismatch between azp and aud claims", self)
+                if self["azp"] not in self["aud"]:
+                    raise VerificationError("Mismatch between azp and aud claims", self)
 
         if "azp" in self:
             if "client_id" in kwargs:
                 if kwargs["client_id"] != self["azp"]:
                     raise NotForMe(
-                        "{} != azp:{}".format(kwargs["client_id"],
-                                              self["azp"]), self)
+                        "{} != azp:{}".format(kwargs["client_id"], self["azp"]), self
+                    )
 
         _now = time_util.utc_time_sans_frac()
 
         try:
-            _skew = kwargs['skew']
+            _skew = kwargs["skew"]
         except KeyError:
             _skew = 0
 
         try:
-            _exp = self['exp']
+            _exp = self["exp"]
         except KeyError:
-            raise MissingRequiredAttribute('exp')
+            raise MissingRequiredAttribute("exp")
         else:
             if (_now - _skew) > _exp:
-                raise EXPError('Invalid expiration time')
+                raise EXPError("Invalid expiration time")
 
         try:
-            _storage_time = kwargs['nonce_storage_time']
+            _storage_time = kwargs["nonce_storage_time"]
         except KeyError:
             _storage_time = NONCE_STORAGE_TIME
 
         try:
-            _iat = self['iat']
+            _iat = self["iat"]
         except KeyError:
-            raise MissingRequiredAttribute('iat')
+            raise MissingRequiredAttribute("iat")
         else:
             if (_iat + _storage_time) < (_now - _skew):
-                raise IATError('Issued too long ago')
+                raise IATError("Issued too long ago")
 
         return True
 
 
-class RefreshSessionRequest(Message):
-    c_param = {"id_token": SINGLE_REQUIRED_STRING,
-               "redirect_url": SINGLE_REQUIRED_STRING,
-               "state": SINGLE_REQUIRED_STRING}
+class StateFullMessage(Message):
+    c_param = {"state": SINGLE_REQUIRED_STRING}
 
 
-class RefreshSessionResponse(Message):
-    c_param = {"id_token": SINGLE_REQUIRED_STRING,
-               "state": SINGLE_REQUIRED_STRING}
+class RefreshSessionRequest(StateFullMessage):
+    c_param = StateFullMessage.c_param.copy()
+    c_param.update(
+        {"id_token": SINGLE_REQUIRED_STRING, "redirect_url": SINGLE_REQUIRED_STRING}
+    )
+
+    def verify(self, **kwargs):
+        super(RefreshSessionRequest, self).verify(**kwargs)
+        if "id_token" in self:
+            self["id_token"] = verify_id_token(self, check_hash=True, **kwargs)
+
+
+class RefreshSessionResponse(StateFullMessage):
+    c_param = StateFullMessage.c_param.copy()
+    c_param.update({"id_token": SINGLE_REQUIRED_STRING})
+
+    def verify(self, **kwargs):
+        super(RefreshSessionResponse, self).verify(**kwargs)
+        if "id_token" in self:
+            self["id_token"] = verify_id_token(self, check_hash=True, **kwargs)
 
 
 class CheckSessionRequest(Message):
     c_param = {"id_token": SINGLE_REQUIRED_STRING}
+
+    def verify(self, **kwargs):
+        super(CheckSessionRequest, self).verify(**kwargs)
+        if "id_token" in self:
+            self["id_token"] = verify_id_token(self, check_hash=True, **kwargs)
 
 
 class CheckIDRequest(Message):
@@ -767,7 +827,7 @@ class EndSessionRequest(Message):
     c_param = {
         "id_token_hint": SINGLE_OPTIONAL_STRING,
         "post_logout_redirect_uri": SINGLE_OPTIONAL_STRING,
-        "state": SINGLE_OPTIONAL_STRING
+        "state": SINGLE_OPTIONAL_STRING,
     }
 
 
@@ -776,25 +836,14 @@ class EndSessionResponse(Message):
 
 
 class Claims(Message):
-    # c_param = {"*": SINGLE_OPTIONAL_JSON_CONV}
     pass
 
 
 class ClaimsRequest(Message):
     c_param = {
         "userinfo": OPTIONAL_MULTIPLE_Claims,
-        "id_token": OPTIONAL_MULTIPLE_Claims
+        "id_token": OPTIONAL_MULTIPLE_Claims,
     }
-
-
-# class UserInfoClaim(Message):
-#     c_param = {"claims": OPTIONAL_MULTIPLE_Claims,
-#                "preferred_locale": SINGLE_OPTIONAL_STRING}
-#
-#
-# class IDTokenClaim(Message):
-#     c_param = {"claims": OPTIONAL_MULTIPLE_Claims,
-#                "max_age": SINGLE_OPTIONAL_INT}
 
 
 class OpenIDRequest(AuthorizationRequest):
@@ -822,13 +871,10 @@ class ProviderConfigurationResponse(Message):
         "userinfo_encryption_alg_values_supported": OPTIONAL_LIST_OF_STRINGS,
         "userinfo_encryption_enc_values_supported": OPTIONAL_LIST_OF_STRINGS,
         "request_object_signing_alg_values_supported": OPTIONAL_LIST_OF_STRINGS,
-        "request_object_encryption_alg_values_supported":
-            OPTIONAL_LIST_OF_STRINGS,
-        "request_object_encryption_enc_values_supported":
-            OPTIONAL_LIST_OF_STRINGS,
+        "request_object_encryption_alg_values_supported": OPTIONAL_LIST_OF_STRINGS,
+        "request_object_encryption_enc_values_supported": OPTIONAL_LIST_OF_STRINGS,
         "token_endpoint_auth_methods_supported": OPTIONAL_LIST_OF_STRINGS,
-        "token_endpoint_auth_signing_alg_values_supported":
-            OPTIONAL_LIST_OF_STRINGS,
+        "token_endpoint_auth_signing_alg_values_supported": OPTIONAL_LIST_OF_STRINGS,
         "display_values_supported": OPTIONAL_LIST_OF_STRINGS,
         "claim_types_supported": OPTIONAL_LIST_OF_STRINGS,
         "claims_supported": OPTIONAL_LIST_OF_STRINGS,
@@ -843,37 +889,45 @@ class ProviderConfigurationResponse(Message):
         "op_tos_uri": SINGLE_OPTIONAL_STRING,
         "check_session_iframe": SINGLE_OPTIONAL_STRING,
         "end_session_endpoint": SINGLE_OPTIONAL_STRING,
-        # "jwk_encryption_url": SINGLE_OPTIONAL_STRING,
-        # "x509_url": SINGLE_REQUIRED_STRING,
-        # "x509_encryption_url": SINGLE_OPTIONAL_STRING,
+        "frontchannel_logout_supported": SINGLE_OPTIONAL_BOOLEAN,
+        "frontchannel_logout_session_supported": SINGLE_OPTIONAL_BOOLEAN,
+        "backchannel_logout_supported": SINGLE_OPTIONAL_BOOLEAN,
+        "backchannel_logout_session_supported": SINGLE_OPTIONAL_BOOLEAN,
     }
-    c_default = {"version": "3.0",
-                 "token_endpoint_auth_methods_supported": [
-                     "client_secret_basic"],
-                 "claims_parameter_supported": False,
-                 "request_parameter_supported": False,
-                 "request_uri_parameter_supported": True,
-                 "require_request_uri_registration": True,
-                 "grant_types_supported": ["authorization_code", "implicit"]}
+    c_default = {
+        "version": "3.0",
+        "token_endpoint_auth_methods_supported": ["client_secret_basic"],
+        "claims_parameter_supported": False,
+        "request_parameter_supported": False,
+        "request_uri_parameter_supported": True,
+        "require_request_uri_registration": False,
+        "grant_types_supported": ["authorization_code", "implicit"],
+        "frontchannel_logout_supported": False,
+        "frontchannel_logout_session_supported": False,
+        "backchannel_logout_supported": False,
+        "backchannel_logout_session_supported": False,
+    }
 
     def verify(self, **kwargs):
-        super(ProviderConfigurationResponse, self).verify(**kwargs)
+        super().verify(**kwargs)
 
         if "scopes_supported" in self:
-            assert "openid" in self["scopes_supported"]
+            if "openid" not in self["scopes_supported"]:
+                raise AssertionError()
             for scope in self["scopes_supported"]:
                 check_char_set(scope, SCOPE_CHARSET)
 
         parts = urlparse(self["issuer"])
-        try:
-            assert parts.scheme == "https"
-        except AssertionError:
+        if parts.scheme != "https":
             raise SchemeError("Not HTTPS")
 
-        assert not parts.query and not parts.fragment
+        if parts.query or parts.fragment:
+            raise AssertionError()
 
-        if any("code" in rt for rt in self[
-                "response_types_supported"]) and "token_endpoint" not in self:
+        if (
+            any("code" in rt for rt in self["response_types_supported"])
+            and "token_endpoint" not in self
+        ):
             raise MissingRequiredAttribute("token_endpoint")
 
         return True
@@ -907,23 +961,28 @@ def jwt_deser(val, sformat="json"):
     if sformat == "urlencoded":
         sformat = "json"
     if sformat in ["dict", "json"]:
-        if not isinstance(val, six.string_types):
+        if not isinstance(val, str):
             val = json.dumps(val)
             sformat = "json"
     return JasonWebToken().deserialize(val, sformat)
 
 
-SINGLE_OPTIONAL_JWT = (Message, False, msg_ser, jwt_deser, False)
+SINGLE_OPTIONAL_JWT = ParamDefinition(Message, False, msg_ser, jwt_deser, False)
 
 
 class UserInfoErrorResponse(message.ErrorResponse):
-    c_allowed_values = {"error": ["invalid_schema", "invalid_request",
-                                  "invalid_token", "insufficient_scope"]}
+    c_allowed_values = {
+        "error": [
+            "invalid_schema",
+            "invalid_request",
+            "invalid_token",
+            "insufficient_scope",
+        ]
+    }
 
 
 class DiscoveryRequest(Message):
-    c_param = {"principal": SINGLE_REQUIRED_STRING,
-               "service": SINGLE_REQUIRED_STRING}
+    c_param = {"principal": SINGLE_REQUIRED_STRING, "service": SINGLE_REQUIRED_STRING}
 
 
 class DiscoveryResponse(Message):
@@ -936,15 +995,133 @@ class ResourceRequest(Message):
 
 SCOPE2CLAIMS = {
     "openid": ["sub"],
-    "profile": ["name", "given_name", "family_name", "middle_name",
-                "nickname", "profile", "picture", "website", "gender",
-                "birthdate", "zoneinfo", "locale", "updated_at",
-                "preferred_username"],
+    "profile": [
+        "name",
+        "given_name",
+        "family_name",
+        "middle_name",
+        "nickname",
+        "profile",
+        "picture",
+        "website",
+        "gender",
+        "birthdate",
+        "zoneinfo",
+        "locale",
+        "updated_at",
+        "preferred_username",
+    ],
     "email": ["email", "email_verified"],
     "address": ["address"],
     "phone": ["phone_number", "phone_number_verified"],
-    "offline_access": []
-}
+    "offline_access": [],
+}  # type: Dict[str, List[str]]
+
+# LOGOUT related messages
+
+SINGLE_OPTIONAL_JSON = ParamDefinition(dict, False, json_ser, json_deser, False)
+SINGLE_REQUIRED_JSON = ParamDefinition(dict, True, json_ser, json_deser, False)
+
+BACK_CHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
+
+
+class LogoutToken(Message):
+    """Defined in https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken ."""
+
+    c_param = {
+        "iss": SINGLE_REQUIRED_STRING,
+        "sub": SINGLE_OPTIONAL_STRING,
+        "aud": REQUIRED_LIST_OF_STRINGS,  # Array of strings or string
+        "iat": SINGLE_REQUIRED_INT,
+        "jti": SINGLE_REQUIRED_STRING,
+        "events": SINGLE_REQUIRED_JSON,
+        "sid": SINGLE_OPTIONAL_STRING,
+    }
+
+    def verify(self, **kwargs):
+        super().verify(**kwargs)
+
+        if "nonce" in self:
+            raise MessageException(
+                '"nonce" is prohibited from appearing in a LogoutToken.'
+            )
+
+        # Check the 'events' JSON
+        _keys = list(self["events"].keys())
+        if len(_keys) != 1:
+            raise ValueError('Must only be one member in "events"')
+        if _keys[0] != BACK_CHANNEL_LOGOUT_EVENT:
+            raise ValueError('Wrong member in "events"')
+        if self["events"][_keys[0]] != {}:
+            raise ValueError('Wrong member value in "events"')
+
+        # There must be either a 'sub' or a 'sid', and may contain both
+        if not ("sub" in self or "sid" in self):
+            raise ValueError('There MUST be either a "sub" or a "sid"')
+
+        try:
+            if kwargs["aud"] not in self["aud"]:
+                raise NotForMe("Not among intended audience")
+        except KeyError:
+            pass
+
+        try:
+            if kwargs["iss"] != self["iss"]:
+                raise NotForMe("Wrong issuer")
+        except KeyError:
+            pass
+
+        _now = utc_time_sans_frac()
+
+        _skew = kwargs.get("skew", 0)
+        _iat = self.get("iat", 0)
+
+        if _iat and _iat > (_now + _skew):
+            raise ValueError("Invalid issued_at time")
+
+        return True
+
+
+ID_TOKEN_VERIFY_ARGS = [
+    "keyjar",
+    "verify",
+    "encalg",
+    "encenc",
+    "sigalg",
+    "issuer",
+    "allow_missing_kid",
+    "no_kid_issuer",
+    "trusting",
+    "skew",
+    "nonce_storage_time",
+    "client_id",
+]
+
+
+class BackChannelLogoutRequest(Message):
+    """Defines the message used in https://openid.net/specs/openid-connect-backchannel-1_0.html ."""
+
+    c_param = {"logout_token": SINGLE_REQUIRED_STRING}
+
+    def verify(self, **kwargs):
+        super().verify(**kwargs)
+
+        args = {arg: kwargs[arg] for arg in TOKEN_VERIFY_ARGS if arg in kwargs}
+
+        logout_token = LogoutToken().from_jwt(str(self["logout_token"]), **args)
+        logout_token.verify(**kwargs)
+
+        self["logout_token"] = logout_token
+        logger.info("Verified Logout Token: {}".format(logout_token.to_dict()))
+
+        return True
+
+
+class FrontChannelLogoutRequest(Message):
+    """Defines the message used in https://openid.net/specs/openid-connect-frontchannel-1_0.html ."""
+
+    c_param = {"iss": SINGLE_OPTIONAL_STRING, "sid": SINGLE_OPTIONAL_STRING}
+
 
 MSG = {
     "RefreshAccessTokenRequest": RefreshAccessTokenRequest,
@@ -968,8 +1145,6 @@ MSG = {
     "EndSessionRequest": EndSessionRequest,
     "EndSessionResponse": EndSessionResponse,
     "Claims": Claims,
-    # "UserInfoClaim": UserInfoClaim,
-    # "IDTokenClaim": IDTokenClaim,
     "OpenIDRequest": OpenIDRequest,
     "ProviderConfigurationResponse": ProviderConfigurationResponse,
     "AuthnToken": AuthnToken,
@@ -977,11 +1152,18 @@ MSG = {
     "DiscoveryRequest": DiscoveryRequest,
     "DiscoveryResponse": DiscoveryResponse,
     "ResourceRequest": ResourceRequest,
+    # LOGOUT messages
+    "LogoutToken": LogoutToken,
+    "BackChannelLogoutRequest": BackChannelLogoutRequest,
+    "FrontChannelLogoutRequest": FrontChannelLogoutRequest,
 }
 
 
 def factory(msgtype):
-    for name, obj in inspect.getmembers(sys.modules[__name__]):
+    warnings.warn(
+        "`factory` is deprecated. Use `OIDCMessageFactory` instead.", DeprecationWarning
+    )
+    for _, obj in inspect.getmembers(sys.modules[__name__]):
         if inspect.isclass(obj) and issubclass(obj, Message):
             try:
                 if obj.__name__ == msgtype:
@@ -991,3 +1173,23 @@ def factory(msgtype):
 
     # Fall back to basic OAuth2 messages
     return message.factory(msgtype)
+
+
+class OIDCMessageFactory(MessageFactory):
+    """Factory that knows OIDC message types."""
+
+    authorization_endpoint = MessageTuple(AuthorizationRequest, AuthorizationResponse)
+    token_endpoint = MessageTuple(AccessTokenRequest, AccessTokenResponse)
+    refresh_endpoint = MessageTuple(RefreshAccessTokenRequest, AccessTokenResponse)
+    resource_endpoint = MessageTuple(ResourceRequest, Message)
+    configuration_endpoint = MessageTuple(Message, ProviderConfigurationResponse)
+
+    userinfo_endpoint = MessageTuple(UserInfoRequest, Message)
+    registration_endpoint = MessageTuple(RegistrationRequest, RegistrationResponse)
+    endsession_endpoint = MessageTuple(EndSessionRequest, EndSessionResponse)
+    checkid_endpoint = MessageTuple(CheckIDRequest, IdToken)
+    checksession_endpoint = MessageTuple(CheckSessionRequest, IdToken)
+    refreshsession_endpoint = MessageTuple(
+        RefreshSessionRequest, RefreshSessionResponse
+    )
+    discovery_endpoint = MessageTuple(DiscoveryRequest, DiscoveryResponse)

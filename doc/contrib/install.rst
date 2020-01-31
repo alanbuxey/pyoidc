@@ -9,9 +9,9 @@ Firstly, fork_ the project and get a local copy with:
 
   $ git clone git@github.com:<your-username>/pyoidc.git
 
-.. _fork: https://github.com/rohe/pyoidc/issues#fork-destination-box
+.. _fork: https://github.com/OpenIDC/pyoidc/issues#fork-destination-box
 
-PyOIDC supports Python 2 and 3.
+PyOIDC supports Python 3.
 
 Installation via a `virtual environment`_ is **highly** recommended.
 
@@ -25,6 +25,6 @@ Install dependencies (using Pip_) via:
 
   $ make install
 
-.. Note:: The depdencies will require you compile your Python source code
+.. Note:: The dependencies will require that you compile your Python source code
           with byte-compiling. This means avoiding the ``-B`` option and
           not setting ``PYTHONDONTWRITEBYTECODE``.

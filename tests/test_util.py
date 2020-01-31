@@ -1,8 +1,8 @@
-from future.backports.http.cookiejar import FileCookieJar
-from future.backports.http.cookiejar import http2time
-from future.backports.http.cookies import SimpleCookie
-from future.backports.urllib.parse import parse_qs
-from future.backports.urllib.parse import urlparse
+from http.cookiejar import FileCookieJar
+from http.cookiejar import http2time  # type: ignore
+from http.cookies import SimpleCookie
+from urllib.parse import parse_qs
+from urllib.parse import urlparse
 
 import pytest
 
@@ -10,8 +10,11 @@ from oic.exception import UnSupported
 from oic.oauth2 import util
 from oic.oic import AuthorizationRequest
 from oic.oic.message import AccessTokenRequest
+from oic.utils.template_render import TemplateException
+from oic.utils.template_render import inputs
+from oic.utils.template_render import render_template
 
-__author__ = 'DIRG'
+__author__ = "DIRG"
 
 
 def query_string_compare(query_str1, query_str2):
@@ -37,65 +40,106 @@ def url_compare(url1, url2):
 
 
 def test_get_or_post():
-    uri = u'https://localhost:8092/authorization'
-    method = 'GET'
-    values = {'acr_values': u'PASSWORD',
-              'state': 'urn:uuid:92d81fb3-72e8-4e6c-9173-c360b782148a',
-              'redirect_uri': 'https://localhost:8666/919D3F697FDAAF138124B83E09ECB0B7',
-              'response_type': 'code', 'client_id': u'ok8tx7ulVlNV',
-              'scope': 'openid profile email address phone'}
+    uri = u"https://localhost:8092/authorization"
+    method = "GET"
+    values = {
+        "acr_values": "PASSWORD",
+        "state": "urn:uuid:92d81fb3-72e8-4e6c-9173-c360b782148a",
+        "redirect_uri": "https://localhost:8666/919D3F697FDAAF138124B83E09ECB0B7",
+        "response_type": "code",
+        "client_id": "ok8tx7ulVlNV",
+        "scope": "openid profile email address phone",
+    }
     request = AuthorizationRequest(**values)
 
     path, body, ret_kwargs = util.get_or_post(uri, method, request)
 
-    assert url_compare(path,
-                       u"https://localhost:8092/authorization?acr_values=PASSWORD&state=urn%3A"
-                       "uuid%3A92d81fb3-72e8-4e6c-9173-c360b782148a&"
-                       "redirect_uri=https%3A%2F%2Flocalhost%3A8666%2F919D3F697FDAAF138124B83E09ECB0B7&"
-                       "response_type=code&client_id=ok8tx7ulVlNV&scope=openid+profile+email+address+phone")
+    assert url_compare(
+        path,
+        u"https://localhost:8092/authorization?acr_values=PASSWORD&state=urn%3A"
+        "uuid%3A92d81fb3-72e8-4e6c-9173-c360b782148a&"
+        "redirect_uri=https%3A%2F%2Flocalhost%3A8666%2F919D3F697FDAAF138124B83E09ECB0B7&"
+        "response_type=code&client_id=ok8tx7ulVlNV&scope=openid+profile+email+address+phone",
+    )
     assert not body
     assert not ret_kwargs
 
-    method = 'POST'
-    uri = u'https://localhost:8092/token'
+    method = "POST"
+    uri = u"https://localhost:8092/token"
     values = {
-        'redirect_uri': 'https://localhost:8666/919D3F697FDAAF138124B83E09ECB0B7',
-        'code': 'Je1iKfPN1vCiN7L43GiXAuAWGAnm0mzA7QIjl/YLBBZDB9wefNExQlLDUIIDM2rT'
-                '2t+gwuoRoapEXJyY2wrvg9cWTW2vxsZU+SuWzZlMDXc=',
-        'grant_type': 'authorization_code'}
-    request = AccessTokenRequest(**values)
-    kwargs = {'scope': '',
-              'state': 'urn:uuid:92d81fb3-72e8-4e6c-9173-c360b782148a',
-              'authn_method': 'client_secret_basic', 'key': [],
-              'headers': {
-                  'Authorization': 'Basic b2s4dHg3dWxWbE5WOjdlNzUyZDU1MTc0NzA0NzQzYjZiZWJk'
-                                   'YjU4ZjU5YWU3MmFlMGM5NDM4YTY1ZmU0N2IxMDA3OTM1'}
-              }
+        "redirect_uri": "https://localhost:8666/919D3F697FDAAF138124B83E09ECB0B7",
+        "code": "Je1iKfPN1vCiN7L43GiXAuAWGAnm0mzA7QIjl/YLBBZDB9wefNExQlLDUIIDM2rT"
+        "2t+gwuoRoapEXJyY2wrvg9cWTW2vxsZU+SuWzZlMDXc=",
+        "grant_type": "authorization_code",
+    }
+    request2 = AccessTokenRequest(**values)
+    kwargs = {
+        "scope": "",
+        "state": "urn:uuid:92d81fb3-72e8-4e6c-9173-c360b782148a",
+        "authn_method": "client_secret_basic",
+        "key": [],
+        "headers": {
+            "Authorization": "Basic b2s4dHg3dWxWbE5WOjdlNzUyZDU1MTc0NzA0NzQzYjZiZWJk"
+            "YjU4ZjU5YWU3MmFlMGM5NDM4YTY1ZmU0N2IxMDA3OTM1"
+        },
+    }
 
-    path, body, ret_kwargs = util.get_or_post(uri, method, request, **kwargs)
+    path, body, ret_kwargs = util.get_or_post(uri, method, request2, **kwargs)
 
-    assert path == u'https://localhost:8092/token'
-    assert url_compare("http://test/#{}".format(body),
-                       'http://test/#code=Je1iKfPN1vCiN7L43GiXAuAWGAnm0mzA7QIjl%2FYLBBZDB9wefNExQlLDUIIDM2rT2t%2BgwuoR'
-                       'oapEXJyY2wrvg9cWTW2vxsZU%2BSuWzZlMDXc%3D&grant_type=authorization_code&redirect_uri=https%3A%2'
-                       'F%2Flocalhost%3A8666%2F919D3F697FDAAF138124B83E09ECB0B7')
-    assert ret_kwargs == {'scope': '',
-                          'state': 'urn:uuid:92d81fb3-72e8-4e6c-9173-c360b782148a',
-                          'authn_method': 'client_secret_basic', 'key': [],
-                          'headers': {
-                              'Content-Type': 'application/x-www-form-urlencoded',
-                              'Authorization': 'Basic b2s4dHg3dWxWbE5WOjdlNzUyZDU1MTc0NzA0NzQzYjZiZWJkYjU4ZjU5YWU3MmFl'
-                                               'MGM5NDM4YTY1ZmU0N2IxMDA3OTM1'}}
+    assert path == u"https://localhost:8092/token"
+    assert url_compare(
+        "http://test/#{}".format(body),
+        "http://test/#code=Je1iKfPN1vCiN7L43GiXAuAWGAnm0mzA7QIjl%2FYLBBZDB9wefNExQlLDUIIDM2rT2t%2BgwuoR"
+        "oapEXJyY2wrvg9cWTW2vxsZU%2BSuWzZlMDXc%3D&grant_type=authorization_code&redirect_uri=https%3A%2"
+        "F%2Flocalhost%3A8666%2F919D3F697FDAAF138124B83E09ECB0B7",
+    )
+    assert ret_kwargs == {
+        "scope": "",
+        "state": "urn:uuid:92d81fb3-72e8-4e6c-9173-c360b782148a",
+        "authn_method": "client_secret_basic",
+        "key": [],
+        "headers": {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": "Basic b2s4dHg3dWxWbE5WOjdlNzUyZDU1MTc0NzA0NzQzYjZiZWJkYjU4ZjU5YWU3MmFl"
+            "MGM5NDM4YTY1ZmU0N2IxMDA3OTM1",
+        },
+    }
 
-    method = 'UNSUPORTED'
+    method = "UNSUPORTED"
     with pytest.raises(UnSupported):
-        util.get_or_post(uri, method, request, **kwargs)
+        util.get_or_post(uri, method, request2, **kwargs)
+
+
+def test_get_or_post_with_qp():
+    uri = u"https://localhost:8092/authorization?test=testslice"
+    method = "GET"
+    values = {
+        "acr_values": "PASSWORD",
+        "state": "urn:uuid:92d81fb3-72e8-4e6c-9173-c360b782148a",
+        "redirect_uri": "https://localhost:8666/919D3F697FDAAF138124B83E09ECB0B7",
+        "response_type": "code",
+        "client_id": "ok8tx7ulVlNV",
+        "scope": "openid profile email address phone",
+    }
+    request = AuthorizationRequest(**values)
+
+    path, body, ret_kwargs = util.get_or_post(uri, method, request)
+
+    assert url_compare(
+        path,
+        u"https://localhost:8092/authorization?test=testslice&acr_values=PASSWORD&state=urn%3A"
+        "uuid%3A92d81fb3-72e8-4e6c-9173-c360b782148a&"
+        "redirect_uri=https%3A%2F%2Flocalhost%3A8666%2F919D3F697FDAAF138124B83E09ECB0B7&"
+        "response_type=code&client_id=ok8tx7ulVlNV&scope=openid+profile+email+address+phone",
+    )
+    assert not body
+    assert not ret_kwargs
 
 
 def test_set_cookie():
     cookiejar = FileCookieJar()
     _cookie = {"value_0": "v_0", "value_1": "v_1", "value_2": "v_2"}
-    c = SimpleCookie(_cookie)
+    c = SimpleCookie(_cookie)  # type: SimpleCookie
 
     domain_0 = ".test_domain"
     domain_1 = "test_domain"
@@ -111,14 +155,16 @@ def test_set_cookie():
 
     util.set_cookie(cookiejar, c)
 
-    cookies = cookiejar._cookies
+    cookies = cookiejar._cookies  # type: ignore
 
     c_0 = cookies[domain_0][path]["value_0"]
     c_1 = cookies[domain_1][""]["value_1"]
     c_2 = cookies[""][""]["value_2"]
 
     assert not (c_2.domain_specified and c_2.path_specified)
-    assert c_1.domain_specified and not c_1.domain_initial_dot and not c_1.path_specified
+    assert (
+        c_1.domain_specified and not c_1.domain_initial_dot and not c_1.path_specified
+    )
     assert c_0.domain_specified and c_0.domain_initial_dot and c_0.path_specified
 
     assert c_0.expires == expires
@@ -156,7 +202,7 @@ def test_match_to():
 
 
 def test_verify_header():
-    class FakeResponse():
+    class FakeResponse:
         def __init__(self, header):
             self.headers = {"content-type": header}
             self.text = "TEST_RESPONSE"
@@ -170,17 +216,81 @@ def test_verify_header():
     assert util.verify_header(FakeResponse(json_header), "json") == "json"
     assert util.verify_header(FakeResponse(jwt_header), "json") == "jwt"
     assert util.verify_header(FakeResponse(jwt_header), "jwt") == "jwt"
-    assert util.verify_header(FakeResponse(default_header),
-                              "urlencoded") == "urlencoded"
-    assert util.verify_header(FakeResponse(plain_text_header),
-                              "urlencoded") == "urlencoded"
+    assert (
+        util.verify_header(FakeResponse(default_header), "urlencoded") == "urlencoded"
+    )
+    assert (
+        util.verify_header(FakeResponse(plain_text_header), "urlencoded")
+        == "urlencoded"
+    )
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         util.verify_header(FakeResponse(json_header), "urlencoded")
         util.verify_header(FakeResponse(jwt_header), "urlencoded")
         util.verify_header(FakeResponse(default_header), "json")
         util.verify_header(FakeResponse(plain_text_header), "jwt")
         util.verify_header(FakeResponse(undefined_header), "json")
-
-    with pytest.raises(ValueError):
         util.verify_header(FakeResponse(json_header), "undefined")
+
+
+class TestRenderTemplate(object):
+    def test_wrong_template(self):
+        with pytest.raises(TemplateException):
+            render_template("bogus_template", {"action": "action"})
+
+    def test_form_post(self):
+        response = render_template(
+            "form_post", {"action": "action", "inputs": {"a": "a"}}
+        )
+        assert '<form method="post" action="action">' in response
+        assert '<input type="hidden" name="a" value="a"/>' in response
+
+    def test_form_post_missing_inputs(self):
+        response = render_template("form_post", {"action": "action"})
+        assert '<form method="post" action="action">' in response
+
+    def test_form_post_missing_action(self):
+        with pytest.raises(TemplateException):
+            render_template("form_post", {"inputs": {"a": "a"}})
+
+    def test_verify_logout(self):
+        response = render_template(
+            "verify_logout",
+            {
+                "action": "action",
+                "id_token_hint": "hint",
+                "post_logout_redirect_uri": "http://example.com",
+            },
+        )
+        assert "Please verify logout" in response
+        assert '<form method="post" action="action">' in response
+        assert '<input type="submit">' in response
+        assert '<input type="hidden" name="id_token_hint" value="hint"/>' in response
+        assert (
+            '<input type="hidden" name="post_logout_redirect_uri" value="http://example.com"/>'
+            in response
+        )
+
+    def test_verify_logout_missing_action(self):
+        with pytest.raises(TemplateException):
+            render_template("verify_logout", {"id_token_hint": "hint"})
+
+    def test_verify_logout_missing_inputs(self):
+        response = render_template("verify_logout", {"action": "action"})
+        assert "Please verify logout" in response
+        assert '<input type="submit">' in response
+        assert '<form method="post" action="action">' in response
+
+
+class TestInputs(object):
+    def test_empty(self):
+        assert inputs({}) == ""
+
+    def test_single(self):
+        assert inputs({"a": "a"}) == '<input type="hidden" name="a" value="a"/>'
+
+    def test_multiple(self):
+        rendered_string = inputs({"a": "a", "b": "b"})
+
+        assert '<input type="hidden" name="a" value="a"/>' in rendered_string
+        assert '<input type="hidden" name="b" value="b"/>' in rendered_string

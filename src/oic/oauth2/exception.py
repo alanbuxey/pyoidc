@@ -1,6 +1,6 @@
 from oic.exception import PyoidcError
 
-__author__ = 'roland'
+__author__ = "roland"
 
 
 class HttpError(PyoidcError):
@@ -57,6 +57,8 @@ class InvalidRequest(PyoidcError):
 
 class NonFatalException(PyoidcError):
     """
+    Return the response but accompany it by an error message.
+
     :param resp: A response that the function/method would return on non-error
     :param msg: A message describing what error has occurred.
     """

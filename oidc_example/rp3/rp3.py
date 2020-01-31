@@ -1,14 +1,13 @@
 #!/usr/bin/env python
-from future.backports.urllib.parse import parse_qs
-from future.backports.urllib.parse import urlencode
-from future.backports.urllib.parse import urlparse
+from urllib.parse import parse_qs
+from urllib.parse import urlencode
+from urllib.parse import urlparse
 
 import argparse
 import importlib
 import json
 import logging
 
-import six
 from jwkest.jws import alg2keytype
 from mako.lookup import TemplateLookup
 from requests import ConnectionError
@@ -494,7 +493,7 @@ if __name__ == '__main__':
         _conf.BASE = args.base_url
 
     _base = "{base}:{port}/".format(base=_conf.BASE, port=args.port)
-    for _client, client_conf in six.iteritems(_conf.CLIENTS):
+    for _client, client_conf in _conf.CLIENTS.items():
         if "client_registration" in client_conf:
             client_reg = client_conf["client_registration"]
             client_reg["redirect_uris"] = [
@@ -551,7 +550,7 @@ if __name__ == '__main__':
     _app = Application(**app_args)
 
     SRV = wsgiserver.CherryPyWSGIServer(
-        ('0.0.0.0', int(args.port)),
+        ('0.0.0.0', int(args.port)), # nosec
         SessionMiddleware(_app.application, session_opts))
 
     if _conf.BASE.startswith("https"):

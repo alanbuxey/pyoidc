@@ -1,23 +1,22 @@
 #!/usr/bin/env python
-from future.utils import tobytes
-
-import os
 from base64 import b64decode
 from base64 import b64encode
+from typing import Union  # noqa
+from typing import cast
 
 from Cryptodome import Random
 from Cryptodome.Cipher import AES
-from six import binary_type
-from six import indexbytes
-from six import text_type
+from Cryptodome.Cipher._mode_ccm import CcmMode  # noqa
+from Cryptodome.Cipher._mode_eax import EaxMode  # noqa
+from Cryptodome.Cipher._mode_gcm import GcmMode  # noqa
+from Cryptodome.Cipher._mode_ocb import OcbMode  # noqa
+from Cryptodome.Cipher._mode_siv import SivMode  # noqa
 
-__author__ = 'rolandh'
+from oic.utils import tobytes
 
-POSTFIX_MODE = {
-    "cbc": AES.MODE_CBC,
-    "cfb": AES.MODE_CFB,
-    "ecb": AES.MODE_CFB,
-}
+__author__ = "rolandh"
+
+POSTFIX_MODE = {"cbc": AES.MODE_CBC, "cfb": AES.MODE_CFB, "ecb": AES.MODE_CFB}
 
 BLOCK_SIZE = 16
 
@@ -28,23 +27,24 @@ class AESError(Exception):
 
 def build_cipher(key, iv, alg="aes_128_cbc"):
     """
+    Create cipher.
+
     :param key: encryption key
     :param iv: init vector
     :param alg: cipher algorithm
     :return: A Cipher instance
     """
-    typ, bits, cmode = alg.split("_")
+    _, bits, cmode = alg.split("_")
 
     if not iv:
         iv = Random.new().read(AES.block_size)
     else:
-        assert len(iv) == AES.block_size
+        if len(iv) != AES.block_size:
+            raise AESError("IV must have the AES block size of %d" % AES.block_size)
 
     if bits not in ["128", "192", "256"]:
         raise AESError("Unsupported key length")
-    try:
-        assert len(key) == int(bits) >> 3
-    except AssertionError:
+    if len(key) != int(bits) >> 3:
         raise AESError("Wrong Key length")
 
     try:
@@ -53,9 +53,18 @@ def build_cipher(key, iv, alg="aes_128_cbc"):
         raise AESError("Unsupported chaining mode")
 
 
-def encrypt(key, msg, iv=None, alg="aes_128_cbc", padding="PKCS#7",
-            b64enc=True, block_size=BLOCK_SIZE):
+def encrypt(
+    key,
+    msg,
+    iv=None,
+    alg="aes_128_cbc",
+    padding="PKCS#7",
+    b64enc=True,
+    block_size=BLOCK_SIZE,
+):
     """
+    Encrypt message.
+
     :param key: The encryption key
     :param iv: init vector
     :param msg: Message to be encrypted
@@ -64,7 +73,6 @@ def encrypt(key, msg, iv=None, alg="aes_128_cbc", padding="PKCS#7",
     :param block_size: If PKCS#7 padding which block size to use
     :return: The encrypted message
     """
-
     if padding == "PKCS#7":
         _block_size = block_size
     elif padding == "PKCS#5":
@@ -75,7 +83,7 @@ def encrypt(key, msg, iv=None, alg="aes_128_cbc", padding="PKCS#7",
     if _block_size:
         plen = _block_size - (len(msg) % _block_size)
         c = chr(plen)
-        msg += (c * plen)
+        msg += c * plen
 
     cipher, iv = build_cipher(tobytes(key), iv, alg)
     cmsg = iv + cipher.encrypt(tobytes(msg))
@@ -87,6 +95,8 @@ def encrypt(key, msg, iv=None, alg="aes_128_cbc", padding="PKCS#7",
 
 def decrypt(key, msg, iv=None, padding="PKCS#7", b64dec=True):
     """
+    Decrypt the message.
+
     :param key: The encryption key
     :param iv: init vector
     :param msg: Base64 encoded message to be decrypted
@@ -97,19 +107,16 @@ def decrypt(key, msg, iv=None, padding="PKCS#7", b64dec=True):
     else:
         data = msg
 
-    _iv = data[:AES.block_size]
-    if iv:
-        assert iv == _iv
     cipher, iv = build_cipher(key, iv)
-    res = cipher.decrypt(data)[AES.block_size:]
+    res = cipher.decrypt(data)[AES.block_size :]
     if padding in ["PKCS#5", "PKCS#7"]:
-        res = res[:-indexbytes(res, -1)]
+        res = res[: -res[-1]]
     return res.decode("utf-8")
 
 
 class AEAD(object):
     """
-    Authenticated Encryption with Associated Data Wrapper
+    Authenticated Encryption with Associated Data Wrapper.
 
     This does encryption and integrity check in one
     operation, so you do not need to combine HMAC + encryption
@@ -131,30 +138,43 @@ class AEAD(object):
         - 512-bit key, 256-bit IV to use AES-256
 
     """
+
     def __init__(self, key, iv, mode=AES.MODE_SIV):
-        assert isinstance(key, binary_type)
-        assert isinstance(iv, binary_type)
+        assert isinstance(key, bytes)  # nosec
+        assert isinstance(iv, bytes)  # nosec
         self.key = key
+        # The code is written in such a way, that only these modes are actually supported
+        # The other ones are missing `encrypt_and_digest`, `decrypt_and_verify` and `update` methods
+        assert mode in (  # nosec
+            AES.MODE_CCM,
+            AES.MODE_EAX,
+            AES.MODE_GCM,
+            AES.MODE_SIV,
+            AES.MODE_OCB,
+        )
         self.mode = mode
         self.iv = iv
-        self.kernel = AES.new(self.key, self.mode, self.iv)
+        self.kernel = cast(
+            Union[CcmMode, EaxMode, GcmMode, SivMode, OcbMode],
+            AES.new(self.key, self.mode, self.iv),
+        )
 
     def add_associated_data(self, data):
         """
-        Add data to include in the MAC
+        Add data to include in the MAC.
 
         This data is protected by the MAC but not encrypted.
 
         :param data: data to add in the MAC calculation
         :type data: bytes
         """
-        if isinstance(data, text_type):
-            data = data.encode('utf-8')
+        if isinstance(data, str):
+            data = data.encode("utf-8")
         self.kernel.update(data)
 
     def encrypt_and_tag(self, cleardata):
         """
-        Encrypt the given data
+        Encrypt the given data.
 
         Encrypts the given data and returns the encrypted
         data and the MAC to later verify and decrypt the data.
@@ -164,12 +184,12 @@ class AEAD(object):
 
         :returns: 2-tuple of encrypted data and MAC
         """
-        assert isinstance(cleardata, binary_type)
+        assert isinstance(cleardata, bytes)  # nosec
         return self.kernel.encrypt_and_digest(cleardata)
 
     def decrypt_and_verify(self, cipherdata, tag):
         """
-        Decrypt and verify
+        Decrypt and verify.
 
         Checks the integrity against the tag and decrypts the
         data. Any associated data used during encryption
@@ -180,23 +200,9 @@ class AEAD(object):
         :param tag: The MAC tag
         :type tag: bytes
         """
-        assert isinstance(cipherdata, binary_type)
-        assert isinstance(tag, binary_type)
+        assert isinstance(cipherdata, bytes)  # nosec
+        assert isinstance(tag, bytes)  # nosec
         try:
             return self.kernel.decrypt_and_verify(cipherdata, tag)
         except ValueError:
             raise AESError("Failed to verify data")
-
-
-if __name__ == "__main__":
-    key_ = "1234523451234545"  # 16 byte key
-    # Iff padded the message doesn't have to be multiple of 16 in length
-    msg_ = "ToBeOrNotTobe W.S."
-    iv_ = os.urandom(16)
-    encrypted_msg = encrypt(key_, msg_, iv_)
-    txt = decrypt(key_, encrypted_msg, iv_)
-    assert txt == msg_
-
-    encrypted_msg = encrypt(key_, msg_, 0)
-    txt = decrypt(key_, encrypted_msg, 0)
-    assert txt == msg_

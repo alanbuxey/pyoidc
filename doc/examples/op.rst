@@ -129,3 +129,30 @@ To setup a multi authentication chain the following steps must be completed:
      `setup_multi_auth` must be added to the `AuthnBroker` instance.
 
   #) The RP can now ask for the multi auth chain using the ACR value specified in the OP config.
+
+
+Custom templates
+----------------
+It is possible to provide custom templates for ``form_post`` and ``verify_logout`` views by
+specifying ``template_renderer`` in `oic.Provider`.
+
+``template_renderer`` should be callable and accepting two arguments (``template_name`` and ``context``) and returning
+formatted html. ``template_name`` can be one of following:
+
+  * ``form_post`` - used for provider response, context must contain ``action`` (url for posting the form)
+    and ``inputs`` a dictionary with passed attributes.
+
+  * ``verify_logout`` - used for verification of logout at Provider.
+
+
+Extension of supported claims and scopes
+----------------------------------------
+To extend the supported and recognized claims and scopes, it is possible to pass keyword arguments ``extra_claims``
+and ``extra_scope_dict`` to a :py:class:`oic.oic.provider.Provider`.
+
+  * ``extra_scope_dict`` - This should be a dictionary with supported extra scopes as keys and the values should be a
+    list with the claims the scope maps to.
+  * ``extra_claims`` - A list with extra supported claims.
+
+It is not necessary to include the claims from ``extra_scope_dict`` in the ``extra_claims`` list, they are appended
+automatically.

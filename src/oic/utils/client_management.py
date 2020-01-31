@@ -1,9 +1,4 @@
 #!/usr/bin/env python
-from __future__ import print_function
-from future.backports.urllib.parse import splitquery
-from future.backports.urllib.parse import urlparse
-from future.moves.urllib.parse import parse_qs
-
 import argparse
 import copy
 import json
@@ -11,11 +6,17 @@ import os
 import shelve
 import sys
 from builtins import input
+from typing import Any  # noqa
+from typing import List  # noqa
+from urllib.parse import parse_qs
+from urllib.parse import splitquery  # type: ignore
+from urllib.parse import urlparse
 
 from oic import rndstr
 from oic.oic.provider import secret
+from oic.utils.clientdb import BaseClientDatabase
 
-__author__ = 'rolandh'
+__author__ = "rolandh"
 
 
 def unpack_redirect_uri(redirect_uris):
@@ -43,7 +44,9 @@ def pack_redirect_uri(redirect_uris):
     return ruri
 
 
-class CDB(object):
+class CDB(BaseClientDatabase):
+    """Implementation of ClientDatabase with shelve."""
+
     def __init__(self, filename):
         self.cdb = shelve.open(filename, writeback=True)
         self.seed = rndstr(32).encode("utf-8")
@@ -57,14 +60,12 @@ class CDB(object):
     def items(self):
         return self.cdb.items()
 
-    def create(self, redirect_uris=None, policy_uri="", logo_uri="",
-               jwks_uri="", **kwargs):
+    def create(self, redirect_uris=None, policy_uri="", logo_uri="", jwks_uri=""):
         if redirect_uris is None:
-            print(
-                'Enter redirect_uris one at the time, end with a blank line: ')
+            print("Enter redirect_uris one at the time, end with a blank line: ")
             redirect_uris = []
             while True:
-                redirect_uri = input('?: ')
+                redirect_uri = input("?: ")
                 if redirect_uri:
                     redirect_uris.append(redirect_uri)
                 else:
@@ -92,7 +93,7 @@ class CDB(object):
         if logo_uri:
             info["logo_uri"] = logo_uri
         if jwks_uri:
-            info['jwks_uri'] = jwks_uri
+            info["jwks_uri"] = jwks_uri
 
         self.cdb[client_id] = info
 
@@ -102,10 +103,11 @@ class CDB(object):
         del self.cdb[key]
 
     def __setitem__(self, key, value):
-        self.cdb[key] = eval(value)
+        self.cdb[key] = value
 
     def load(self, filename):
-        info = json.loads(open(filename).read())
+        with open(filename) as f:
+            info = json.loads(f.read())
         for item in info:
             if isinstance(item, list):
                 self.cdb[str(item[0])] = item[1]
@@ -123,41 +125,76 @@ class CDB(object):
                     self.cdb[str(item["client_id"])] = item
 
     def dump(self, filename):
-        res = []
+        res = []  # type: List[Any]
         for key, val in self.cdb.items():
             if isinstance(val, dict):
                 res.append(val)
             else:
                 res.append([key, val])
 
-        fp = open(filename, 'w')
-        json.dump(res, fp)
-        fp.close()
+        with open(filename, "w") as fp:
+            json.dump(res, fp)
 
 
-if __name__ == "__main__":
+def run():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-l', dest='list', action='store_true',
-                        help="list all client_ids")
-    parser.add_argument('-d', dest='delete', action='store_true',
-                        help="delete the entity with the given client_id")
-    parser.add_argument('-c', dest='create', action='store_true',
-                        help=("create a new client, returns the stored "
-                              "information"))
-    parser.add_argument('-s', dest='show', action='store_true',
-                        help=("show information connected to a specific"
-                              "client_id"))
-    parser.add_argument('-i', dest='client_id',
-                        help="a client_id on which to do an action")
-    parser.add_argument('-r', dest='replace',
-                        help=("information that should replace what's there"
-                              "about a specific client_id"))
-    parser.add_argument('-I', dest='input_file',
-                        help="Import client information from a file")
-    parser.add_argument('-D', dest='output_file',
-                        help="Dump client information to a file")
-    parser.add_argument('-R', dest="reset", action='store_true',
-                        help="Reset the database == removing all registrations")
+    parser.add_argument(
+        "-l", "--list", dest="list", action="store_true", help="List all client_ids"
+    )
+    parser.add_argument(
+        "-d",
+        "--delete",
+        dest="delete",
+        action="store_true",
+        help="Delete the entity with the given client_id",
+    )
+    parser.add_argument(
+        "-c",
+        "--create",
+        dest="create",
+        action="store_true",
+        help=("Create a new client, returns the stored information"),
+    )
+    parser.add_argument(
+        "-s",
+        "--show",
+        dest="show",
+        action="store_true",
+        help=("Show information connected to a specific client_id"),
+    )
+    parser.add_argument(
+        "-i",
+        "--client-id",
+        dest="client_id",
+        help="A client_id on which to do an action",
+    )
+    parser.add_argument(
+        "-r",
+        "--replace",
+        dest="replace",
+        help=(
+            "Information that should replace what's there about a specific client_id"
+        ),
+    )
+    parser.add_argument(
+        "-I",
+        "--input-file",
+        dest="input_file",
+        help="Import client information from a file",
+    )
+    parser.add_argument(
+        "-D",
+        "--output-file",
+        dest="output_file",
+        help="Dump client information to a file",
+    )
+    parser.add_argument(
+        "-R",
+        "--reset",
+        dest="reset",
+        action="store_true",
+        help="Reset the database == removing all registrations",
+    )
     parser.add_argument(dest="filename")
     args = parser.parse_args()
 
@@ -167,7 +204,8 @@ if __name__ == "__main__":
     cdb = CDB(args.filename)
 
     if args.list:
-        print(cdb.keys())
+        for client_id in list(cdb.keys()):
+            print(client_id)
     elif args.client_id:
         if args.delete:
             del cdb[args.client_id]
@@ -183,3 +221,7 @@ if __name__ == "__main__":
         cdb.load(args.input_file)
     elif args.output_file:
         cdb.dump(args.output_file)
+
+
+if __name__ == "__main__":
+    run()

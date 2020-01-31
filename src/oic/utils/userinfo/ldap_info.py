@@ -1,11 +1,19 @@
-import logging
+try:
+    import ldap
+except ImportError:
+    raise ImportError("This module can be used only with pyldap installed.")
 
-import ldap
+import logging
+from typing import Dict  # noqa
+from typing import List  # noqa
+
+from ldap import LDAPError  # noqa
+from ldap import LDAPObject  # noqa
 
 from oic.utils.sanitize import sanitize
 from oic.utils.userinfo import UserInfo
 
-__author__ = 'rolandh'
+__author__ = "rolandh"
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +37,24 @@ OPENID2LDAP = {
     "phone_number": "telephoneNumber",
     # phone_number_verified
     "address": "postalAddress",
-    "updated_at": ""  # Nothing equivalent
+    "updated_at": "",  # Nothing equivalent
 }
 
 
 class UserInfoLDAP(UserInfo):
-    def __init__(self, uri, base, filter_pattern, scope=ldap.SCOPE_SUBTREE,
-                 tls=False, user="", passwd="", attr=None, attrsonly=False, attrmap=OPENID2LDAP):
+    def __init__(  # nosec
+        self,
+        uri,
+        base,
+        filter_pattern,
+        scope=ldap.SCOPE_SUBTREE,
+        tls=False,
+        user="",
+        passwd="",
+        attr=None,
+        attrsonly=False,
+        attrmap=OPENID2LDAP,
+    ):
         super(UserInfoLDAP, self).__init__(None)
         self.ldapuri = uri
         self.base = base
@@ -47,7 +66,7 @@ class UserInfoLDAP(UserInfo):
         self.ldapuser = user
         self.ldappasswd = passwd
         self.bind()
-        self.ld = None
+        self.ld = None  # type: LDAPObject
         self.openid2ldap = attrmap
         self.ldap2openid = dict([(v, k) for k, v in self.openid2ldap.items()])
 
@@ -58,8 +77,9 @@ class UserInfoLDAP(UserInfo):
             self.ld.start_tls_s()
         self.ld.simple_bind_s(self.ldapuser, self.ldappasswd)
 
-    def __call__(self, userid, client_id, user_info_claims=None,
-                 first_only=True, **kwargs):
+    def __call__(
+        self, userid, client_id, user_info_claims=None, first_only=True, **kwargs
+    ):
         _filter = self.filter_pattern % userid
         logger.debug("CLAIMS: %s" % sanitize(user_info_claims))
         _attr = self.attr
@@ -69,7 +89,7 @@ class UserInfoLDAP(UserInfo):
             except KeyError:
                 pass
             else:
-                avaspec = {}
+                avaspec = {}  # type: Dict[str, List[str]]
                 for key, val in _claims.items():
                     try:
                         attr = self.openid2ldap[key]
@@ -86,12 +106,10 @@ class UserInfoLDAP(UserInfo):
         arg = [self.base, self.scope, _filter, _attr, self.attrsonly]
         try:
             res = self.ld.search_s(*arg)
-        except Exception:
-            # FIXME: This should catch specific exception from `self.ld.search_s()`
+        except LDAPError:
             try:
                 self.ld.close()
-            except Exception:
-                # FIXME: This should catch specific exception from `self.ld.close()`
+            except LDAPError:
                 pass
             self.bind()
             res = self.ld.search_s(*arg)

@@ -1,23 +1,29 @@
-from future.utils import tobytes
-
 import base64
 import copy
 import hashlib
-import itertools
 import json
 import logging
-import time
 import uuid
+import warnings
+from binascii import Error
+from typing import Any
+from typing import Dict  # noqa
+from typing import List  # noqa
+from typing import Optional
 
 from cryptography.fernet import Fernet
+from cryptography.fernet import InvalidToken
 
 from oic import rndstr
 from oic.exception import ImproperlyConfigured
-from oic.oic import AuthorizationRequest
-from oic.utils.time_util import time_sans_frac
+from oic.oauth2.message import AuthorizationRequest
+from oic.utils import tobytes
+from oic.utils.session_backend import AuthnEvent
+from oic.utils.session_backend import DictSessionBackend
+from oic.utils.session_backend import SessionBackend
 from oic.utils.time_util import utc_time_sans_frac
 
-__author__ = 'rohe0002'
+__author__ = "rohe0002"
 
 logger = logging.getLogger(__name__)
 
@@ -25,17 +31,17 @@ logger = logging.getLogger(__name__)
 def lv_pack(*args):
     s = []
     for a in args:
-        s.append('{}:{}'.format(len(a), a))
-    return ''.join(s)
+        s.append("{}:{}".format(len(a), a))
+    return "".join(s)
 
 
 def lv_unpack(txt):
     txt = txt.strip()
     res = []
     while txt:
-        l, v = txt.split(':', 1)
-        res.append(v[:int(l)])
-        txt = v[int(l):]
+        l, v = txt.split(":", 1)
+        res.append(v[: int(l)])
+        txt = v[int(l) :]
     return res
 
 
@@ -57,21 +63,22 @@ class UnknownToken(Exception):
 
 def pairwise_id(sub, sector_identifier, seed):
     return hashlib.sha256(
-        ("%s%s%s" % (sub, sector_identifier, seed)).encode("utf-8")).hexdigest()
+        ("%s%s%s" % (sub, sector_identifier, seed)).encode("utf-8")
+    ).hexdigest()
 
 
 class Crypt(object):
-
     def __init__(self, password, mode=None):
         self.key = base64.urlsafe_b64encode(
-            hashlib.sha256(password.encode("utf-8")).digest())
+            hashlib.sha256(password.encode("utf-8")).digest()
+        )
         self.core = Fernet(self.key)
 
     def encrypt(self, text):
         # Padding to blocksize of AES
         text = tobytes(text)
         if len(text) % 16:
-            text += b' ' * (16 - len(text) % 16)
+            text += b" " * (16 - len(text) % 16)
         return self.core.encrypt(tobytes(text))
 
     def decrypt(self, ciphertext):
@@ -79,10 +86,16 @@ class Crypt(object):
 
 
 class Token(object):
-    def __init__(self, typ, lifetime=0, **kwargs):
+    def __init__(self, typ, lifetime=0, token_storage=None, **kwargs):
         self.type = typ
         self.lifetime = lifetime
         self.args = kwargs
+        if typ == "R":
+            if token_storage is None:
+                raise ImproperlyConfigured(
+                    "token_storage kwarg must be passed in for refresh token."
+                )
+        self.token_storage = token_storage
 
     def __call__(self, sid, *args, **kwargs):
         """
@@ -94,15 +107,12 @@ class Token(object):
         raise NotImplementedError()
 
     def key(self, **kwargs):
-        """
-        Return a key (the session id)
-        """
+        """Return a key - the session id."""
         return rndstr(32)
 
     def type_and_key(self, token):
         """
-        Return type of Token (A=Access code, T=Token, R=Refresh token) and
-        the session id.
+        Return type of Token (A=Access code, T=Token, R=Refresh token) and the session id.
 
         :param token: A token
         :return: tuple of token type and session id
@@ -111,7 +121,7 @@ class Token(object):
 
     def get_key(self, token):
         """
-        Return session id
+        Return session id.
 
         :param token: A token
         :return: The session id
@@ -120,30 +130,57 @@ class Token(object):
 
     def get_type(self, token):
         """
-        Return token type
+        Return token type.
 
         :param token: A token
         :return: Type of Token (A=Access code, T=Token, R=Refresh token)
         """
         raise NotImplementedError()
 
-    def expires_at(self):
-        return utc_time_sans_frac() + self.lifetime
+    def expires_at(self, token):
+        """
+        Return the expiry timestamp of the token.
+
+        :param token: A token
+        :return: Timestamp of the token expiry in UTC
+        """
+        raise NotImplementedError()
+
+    def is_expired(self, token, when=None):
+        """Return if token is still valid."""
+        if when is None:
+            now = utc_time_sans_frac()
+        else:
+            now = when
+        eat = self.expires_at(token)
+        return bool(now > eat)
 
     def invalidate(self, token):
-        pass
+        """Mark the refresh token as invalidated."""
+        if self.get_type(token) != "R":
+            return
+        sid = self.get_key(token)
+        self.token_storage[sid]["revoked"] = True
 
     def valid(self, token):
-        self.type_and_key(token)
-        return True
+        try:
+            typ, key = self.type_and_key(token)
+        except (Error, InvalidToken):
+            raise WrongTokenType()
+        if typ != self.type:
+            raise WrongTokenType()
+        if typ == "R":
+            return not self.token_storage[key].get("revoked", False)
+        else:
+            return True
 
 
 class DefaultToken(Token):
-    def __init__(self, secret, password, typ='', **kwargs):
+    def __init__(self, secret, password, typ="", **kwargs):
         Token.__init__(self, typ, **kwargs)
         self.crypt = Crypt(password)
 
-    def __call__(self, sid='', ttype='', **kwargs):
+    def __call__(self, sid="", ttype="", **kwargs):
         """
         Return a token.
 
@@ -155,50 +192,59 @@ class DefaultToken(Token):
         if not ttype and self.type:
             ttype = self.type
         else:
-            ttype = 'A'
+            ttype = "A"
 
-        tmp = ''
-        rnd = ''
+        tmp = ""
+        rnd = ""
         while rnd == tmp:  # Don't use the same random value again
             rnd = rndstr(32)  # Ultimate length multiple of 16
 
+        issued_at = "{}".format(utc_time_sans_frac())
+        if ttype == "R":
+            # kwargs["sinfo"] is a dictionary and we do not want updates...
+            self.token_storage[sid] = copy.deepcopy(kwargs["sinfo"])
+
         return base64.b64encode(
-            self.crypt.encrypt(lv_pack(rnd, ttype, sid).encode())).decode(
-            "utf-8")
+            self.crypt.encrypt(lv_pack(rnd, ttype, sid, issued_at).encode())
+        ).decode("utf-8")
 
     def key(self, user="", areq=None):
         """
-        Return a key (the session id) that are based on some session
-        connected data
+        Return a key - the session id - that are based on some session connected data.
 
         :param user: User id
         :param areq: The authorization request
         :return: A hash
         """
-        csum = hashlib.new('sha224')
-        csum.update(rndstr(32).encode('utf-8'))
+        csum = hashlib.new("sha224")
+        csum.update(rndstr(32).encode("utf-8"))
         return csum.hexdigest()  # 56 bytes long, 224 bits
 
     def _split_token(self, token):
+        """
+        Decode the token.
+
+        :param token: A token
+        :return: Tuple of sid, type, iat, salt
+        """
         plain = self.crypt.decrypt(base64.b64decode(token)).decode()
-        # order: rnd, type, sid
+        # order: rnd, type, sid, iat
         p = lv_unpack(plain)
-        return p[1], p[2], p[0]
+        return p[1], p[2], int(p[3]), p[0]
 
     def type_and_key(self, token):
         """
-        Return type of Token (A=Access code, T=Token, R=Refresh token) and
-        the session id.
+        Return type of Token (A=Access code, T=Token, R=Refresh token) and the session id.
 
         :param token: A token
         :return: tuple of token type and session id
         """
-        a, b, c = self._split_token(token)
+        a, b, _, _ = self._split_token(token)
         return a, b
 
     def get_key(self, token):
         """
-        Return session id
+        Return session id.
 
         :param token: A token
         :return: The session id
@@ -207,50 +253,36 @@ class DefaultToken(Token):
 
     def get_type(self, token):
         """
-        Return token type
+        Return token type.
 
         :param token: A token
         :return: Type of Token (A=Access code, T=Token, R=Refresh token)
         """
         return self._split_token(token)[0]
 
-
-class AuthnEvent(object):
-    def __init__(self, uid, salt, valid=3600, authn_info=None,
-                 time_stamp=0, authn_time=None, valid_until=None):
+    def expires_at(self, token):
         """
-        Creates a representation of an authentication event.
+        Return expiry time.
 
-        :param uid: The local user identifier
-        :param salt: Salt to be used in creating a sub
-        :param valid: How long the authentication is expected to be valid
-        :param authn_info: Info about the authentication event
-        :return:
+        :param token: A token
+        :return: expiry timestamp
         """
-        self.uid = uid
-        self.salt = salt
-        self.authn_time = authn_time or (int(time_stamp) or time_sans_frac())
-        self.valid_until = valid_until or (self.authn_time + int(valid))
-        self.authn_info = authn_info
-
-    def valid(self):
-        return self.valid_until > time.time()
-
-    def valid_for(self):
-        return self.valid_until - time.time()
-
-    def to_json(self):
-        return self.__dict__
+        return self._split_token(token)[2] + self.lifetime
 
 
 class RefreshDB(object):
-    """
-    Database for refresh token storage.
-    """
+    """Database for refresh token storage."""
+
+    def __init__(self):
+        warnings.warn(
+            "Using `RefreshDB` is deprecated, please use `Token` and `refresh_token_factory` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     def get(self, refresh_token):
         """
-        Retrieve info about the authentication proces from the refresh token
+        Retrieve info about the authentication proces from the refresh token.
 
         :return: Dictionary with info
         :raises: KeyError
@@ -259,7 +291,7 @@ class RefreshDB(object):
 
     def store(self, token, info):
         """
-        Stores the information about the authentication process
+        Store the information about the authentication process.
 
         :param token: Token
         :param info: Information associated with token to be stored
@@ -268,7 +300,7 @@ class RefreshDB(object):
 
     def remove(self, token):
         """
-        Removes the token and related information from the internal storage
+        Remove the token and related information from the internal storage.
 
         :param token: Token to be removed
         """
@@ -276,8 +308,7 @@ class RefreshDB(object):
 
     def create_token(self, client_id, uid, scopes, sub, authzreq, sid):
         """
-        Create refresh token for given combination of client_id and sub and
-        store it in internal storage
+        Create refresh token for given combination of client_id and sub and store it in internal storage.
 
         :param client_id: Client_id of the consumer
         :param uid: User identification
@@ -287,64 +318,71 @@ class RefreshDB(object):
         :param sid: Session ID
         :return: Refresh token
         """
-        refresh_token = 'Refresh_{}'.format(rndstr(5 * 16))
-        self.store(refresh_token,
-                   {'client_id': client_id, 'uid': uid, 'scope': scopes,
-                    'sub': sub, 'authzreq': authzreq, 'sid': sid})
+        refresh_token = "Refresh_{}".format(rndstr(5 * 16))
+        self.store(
+            refresh_token,
+            {
+                "client_id": client_id,
+                "uid": uid,
+                "scope": scopes,
+                "sub": sub,
+                "authzreq": authzreq,
+                "sid": sid,
+            },
+        )
         return refresh_token
 
     def verify_token(self, client_id, refresh_token):
-        """
-        Verifies if the refresh token belongs to client_id
-        """
-        if not refresh_token.startswith('Refresh_'):
+        """Verify if the refresh token belongs to client_id."""
+        if not refresh_token.startswith("Refresh_"):
             raise WrongTokenType
         try:
-            stored_cid = self.get(refresh_token).get('client_id')
+            stored_cid = self.get(refresh_token).get("client_id")
         except KeyError:
             return False
         return client_id == stored_cid
 
     def revoke_token(self, token):
-        """
-        Remove token from database
-        """
+        """Remove token from database."""
         self.remove(token)
 
 
 class DictRefreshDB(RefreshDB):
-    """
-    Dictionary based implementation of RefreshDB
-    """
+    """Dictionary based implementation of RefreshDB."""
 
     def __init__(self):
         super(DictRefreshDB, self).__init__()
-        self._db = {}
+        warnings.warn(
+            "Using `DictRefreshDB` is deprecated, please use `Token` and `refresh_token_factory` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._db = {}  # type: Dict[str, Dict[str, str]]
 
     def get(self, refresh_token):
-        """
-        Retrieve info for given token from dictionary
-        """
+        """Retrieve info for given token from dictionary."""
         return self._db[refresh_token].copy()
 
     def store(self, token, info):
-        """
-        Add token and info to the dictionary
-        """
+        """Add token and info to the dictionary."""
         self._db[token] = info
 
     def remove(self, token):
-        """
-        Remove the token from the dictionary
-        """
+        """Remove the token from the dictionary."""
         self._db.pop(token)
 
 
-def create_session_db(base_url, secret, password, db=None,
-                      token_expires_in=3600, grant_expires_in=600,
-                      refresh_token_expires_in=86400):
+def create_session_db(
+    base_url,
+    secret,
+    password,
+    db=None,
+    token_expires_in=3600,
+    grant_expires_in=600,
+    refresh_token_expires_in=86400,
+):
     """
-    Convenience wrapper for SessionDB construction
+    Construct SessionDB instance.
 
     Using this you can create a very basic non persistant
     session database that issues opaque DefaultTokens.
@@ -359,41 +397,59 @@ def create_session_db(base_url, secret, password, db=None,
 
     :return: A constructed `SessionDB` object.
     """
-
-    code_factory = DefaultToken(secret, password, typ='A',
-                                lifetime=grant_expires_in)
-    token_factory = DefaultToken(secret, password, typ='T',
-                                 lifetime=token_expires_in)
-    db = {} if db is None else db
+    code_factory = DefaultToken(secret, password, typ="A", lifetime=grant_expires_in)
+    token_factory = DefaultToken(secret, password, typ="T", lifetime=token_expires_in)
+    db = DictSessionBackend() if db is None else db
+    refresh_token_factory = DefaultToken(
+        secret, password, typ="R", lifetime=refresh_token_expires_in, token_storage={}
+    )
 
     return SessionDB(
-        base_url, db,
+        base_url,
+        db,
         refresh_db=None,
         code_factory=code_factory,
         token_factory=token_factory,
-        refresh_token_expires_in=refresh_token_expires_in,
-        refresh_token_factory=None,
+        refresh_token_factory=refresh_token_factory,
     )
 
 
 class SessionDB(object):
-    def __init__(self, base_url, db, refresh_db=None,
-                 refresh_token_expires_in=86400,
-                 token_factory=None, code_factory=None,
-                 refresh_token_factory=None):
+    def __init__(
+        self,
+        base_url,
+        db,
+        refresh_db=None,
+        refresh_token_expires_in=None,
+        token_factory=None,
+        code_factory=None,
+        refresh_token_factory=None,
+        sm_salt="",
+    ):
+        """
+        Object to store the session related information.
 
+        :param db: Database for storing the session information.
+        """
+        if refresh_token_expires_in is not None:
+            warnings.warn(
+                "Setting a `refresh_token_expires_in` has no effect, please set the expiration on "
+                "`refresh_token_factory`.",
+                DeprecationWarning,
+            )
         self.base_url = base_url
+        if not isinstance(db, SessionBackend):
+            warnings.warn(
+                "Please use `SessionBackend` to ensure proper API for the database.",
+                DeprecationWarning,
+            )
         self._db = db
 
-        # TODO: uid2sid should have a persistence option too.
-        self.uid2sid = {}
+        self.sm_salt = sm_salt or rndstr(32)
 
-        self.token_factory = {
-            'code': code_factory,
-            'access_token': token_factory,
-        }
+        self.token_factory = {"code": code_factory, "access_token": token_factory}
 
-        self.token_factory_order = ['code', 'access_token']
+        self.token_factory_order = ["code", "access_token"]
 
         # TODO: This should simply be a factory like all the others too,
         #       even for the default case.
@@ -401,16 +457,24 @@ class SessionDB(object):
         if refresh_token_factory:
             if refresh_db:
                 raise ImproperlyConfigured(
-                    "Only use one of refresh_db or refresh_token_factory")
+                    "Only use one of refresh_db or refresh_token_factory"
+                )
             self._refresh_db = None
-            self.token_factory['refresh_token'] = refresh_token_factory
-            self.token_factory_order.append('refresh_token')
+            self.token_factory["refresh_token"] = refresh_token_factory
+            self.token_factory_order.append("refresh_token")
         elif refresh_db:
+            warnings.warn(
+                "Using `refresh_db` is deprecated, please use `refresh_token_factory`",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             self._refresh_db = refresh_db
         else:
-            self._refresh_db = DictRefreshDB()
+            # Not configured
+            self._refresh_db = None
+            self.token_factory["refresh_token"] = None
 
-        self.access_token = self.token_factory['access_token']
+        self.access_token = self.token_factory["access_token"]
         self.token = self.access_token
 
     def _get_token_key(self, item, order=None):
@@ -420,7 +484,8 @@ class SessionDB(object):
         for key in order:
             try:
                 return self.token_factory[key].get_key(item)
-            except Exception:
+            except Exception:  # nosec
+                # FIXME: Catch specific exception
                 pass
 
         logger.info("Unknown token format")
@@ -433,7 +498,8 @@ class SessionDB(object):
         for key in order:
             try:
                 return self.token_factory[key].type_and_key(item)
-            except Exception:
+            except Exception:  # nosec
+                # FIXME: Catch specific exception.
                 pass
 
         logger.info("Unknown token format")
@@ -446,7 +512,8 @@ class SessionDB(object):
         for key in order:
             try:
                 return self.token_factory[key].get_type(item)
-            except Exception:
+            except Exception:  # nosec
+                # FIXME: Catch specific exception
                 pass
 
         logger.info("Unknown token format or invalid token")
@@ -454,6 +521,8 @@ class SessionDB(object):
 
     def __getitem__(self, item):
         """
+        Return Session item.
+
         :param item: authz grant code or refresh token
         """
         try:
@@ -464,19 +533,19 @@ class SessionDB(object):
 
     def __setitem__(self, key, value):
         """
+        Assign Session item.
+
         :param key: authz grant code or refresh token
         """
-
         self._db[key] = value
 
     def __delitem__(self, sid):
         """
-        Actually delete the pointed session from this SessionDB instance
+        Actually delete the pointed session from this SessionDB instance.
+
         :param sid: session identifier
         """
         del self._db[sid]
-        # Delete the mapping for session id
-        self.uid2sid = {k: v for k, v in self.uid2sid.items() if sid not in v}
 
     def update(self, key, attribute, value):
         if key in self._db:
@@ -499,7 +568,7 @@ class SessionDB(object):
 
     def do_sub(self, sid, client_salt, sector_id="", subject_type="public"):
         """
-        Construct a sub (subject identifier)
+        Construct a sub (subject identifier).
 
         :param sid: Session identifier
         :param sector_id: Possible sector identifier
@@ -507,31 +576,24 @@ class SessionDB(object):
         :param client_salt: client specific salt - used in pairwise
         :return:
         """
-        uid = self._db[sid]["authn_event"]["uid"]
-        user_salt = self._db[sid]["authn_event"]["salt"]
+        authn_event = self.get_authentication_event(sid)
+        uid = authn_event.uid
+        user_salt = authn_event.salt
 
         if subject_type == "public":
             sub = hashlib.sha256(
-                "{}{}".format(uid, user_salt).encode("utf-8")).hexdigest()
+                "{}{}".format(uid, user_salt).encode("utf-8")
+            ).hexdigest()
         else:
-            sub = pairwise_id(uid, sector_id,
-                              "{}{}".format(client_salt, user_salt))
+            sub = pairwise_id(uid, sector_id, "{}{}".format(client_salt, user_salt))
 
-        # since sub can be public, there can be more then one session
-        # that uses the same subject identifier
-        try:
-            self.uid2sid[uid] += [sid]
-        except KeyError:
-            self.uid2sid[uid] = [sid]
-
-        logger.debug("uid2sid: %s" % self.uid2sid)
-        self.update(sid, 'sub', sub)
+        self.update(sid, "sub", sub)
 
         return sub
 
-    def create_authz_session(self, aevent, areq, id_token=None, oidreq=None,
-                             **kwargs):
+    def create_authz_session(self, aevent, areq, id_token=None, oidreq=None, **kwargs):
         """
+        Create session holding info about the Authorization event.
 
         :param aevent: An AuthnEvent instance
         :param areq: The AuthorizationRequest instance
@@ -539,9 +601,8 @@ class SessionDB(object):
         :param oidreq: An OpenIDRequest instance
         :return: The session identifier, which is the database key
         """
-
-        sid = self.token_factory['code'].key(user=aevent.uid, areq=areq)
-        access_grant = self.token_factory['code'](sid=sid)
+        sid = self.token_factory["code"].key(user=aevent.uid, areq=areq)
+        access_grant = self.token_factory["code"](sid=sid)
 
         _dic = {
             "oauth_state": "authz",
@@ -549,9 +610,9 @@ class SessionDB(object):
             "code_used": False,
             "authzreq": areq.to_json(),
             "client_id": areq["client_id"],
-            'response_type': areq['response_type'],
+            "response_type": areq["response_type"],
             "revoked": False,
-            "authn_event": aevent.to_json()
+            "authn_event": aevent.to_json(),
         }
 
         _dic.update(kwargs)
@@ -579,7 +640,12 @@ class SessionDB(object):
         return sid
 
     def get_authentication_event(self, sid):
-        return self._db[sid]["authn_event"]
+        """Return AuthnEvent based on sid."""
+        # This is a compatibility shim for older sessions
+        if isinstance(self._db[sid]["authn_event"], dict):
+            return AuthnEvent(**self._db[sid]["authn_event"])
+        else:
+            return AuthnEvent.from_json(self._db[sid]["authn_event"])
 
     def get_token(self, sid):
         if self._db[sid]["oauth_state"] == "authz":
@@ -587,9 +653,17 @@ class SessionDB(object):
         elif self._db[sid]["oauth_state"] == "token":
             return self._db[sid]["access_token"]
 
-    def upgrade_to_token(self, token=None, issue_refresh=False, id_token="",
-                         oidreq=None, key=None, access_grant=""):
+    def upgrade_to_token(  # nosec
+        self,
+        token=None,
+        issue_refresh=False,
+        id_token="",
+        oidreq=None,
+        key=None,
+        access_grant="",
+    ):
         """
+        Promote session to token.
 
         :param token: The access grant
         :param issue_refresh: If a refresh token should be issued
@@ -600,7 +674,7 @@ class SessionDB(object):
         """
         if token:
             try:
-                (typ, key) = self.token_factory['code'].type_and_key(token)
+                (_, key) = self.token_factory["code"].type_and_key(token)
             except Exception:
                 raise WrongTokenType("Not a grant token")
 
@@ -615,9 +689,9 @@ class SessionDB(object):
             _at = self.access_token(sid=key, sinfo=dic)
 
         dic["access_token"] = _at
-        dic["access_token_scope"] = "?"
+        dic["access_token_scope"] = "?"  # nosec
         dic["oauth_state"] = "token"
-        dic["token_type"] = "Bearer"
+        dic["token_type"] = "Bearer"  # nosec
 
         if id_token:
             dic["id_token"] = id_token
@@ -625,26 +699,34 @@ class SessionDB(object):
             dic["oidreq"] = oidreq
 
         if issue_refresh:
-            authn_event = dic.get('authn_event')
+            if "authn_event" in dic:
+                authn_event = AuthnEvent.from_json(dic["authn_event"])
+            else:
+                authn_event = None
             if authn_event:
-                uid = authn_event["uid"]
+                uid = authn_event.uid
             else:
                 uid = None
 
             if self._refresh_db:
                 refresh_token = self._refresh_db.create_token(
-                    dic['client_id'], uid, dic.get('scope'), dic['sub'],
-                    dic['authzreq'], key)
-            else:
-                refresh_token = self.token_factory['refresh_token'](key,
-                                                                    sinfo=dic)
-            dic["refresh_token"] = refresh_token
+                    dic["client_id"],
+                    uid,
+                    dic.get("scope"),
+                    dic["sub"],
+                    dic["authzreq"],
+                    key,
+                )
+                dic["refresh_token"] = refresh_token
+            elif self.token_factory["refresh_token"] is not None:
+                refresh_token = self.token_factory["refresh_token"](key, sinfo=dic)
+                dic["refresh_token"] = refresh_token
         self._db[key] = dic
         return dic
 
     def refresh_token(self, rtoken, client_id):
         """
-        Issue a new access token using a valid refresh token
+        Issue a new access token using a valid refresh token.
 
         :param rtoken: Refresh token
         :param client_id: Client ID
@@ -652,19 +734,18 @@ class SessionDB(object):
         :raises: ExpiredToken for invalid refresh token
                  WrongTokenType for wrong token type
         """
-
         # assert that it is a refresh token and that it is valid
         if self._refresh_db:
             if self._refresh_db.verify_token(client_id, rtoken):
                 # Valid refresh token
                 _info = self._refresh_db.get(rtoken)
                 try:
-                    sid = _info['sid']
+                    sid = _info["sid"]
                 except KeyError:
-                    areq = json.loads(_info['authzreq'])
-                    sid = self.token_factory['code'].key(user=_info['uid'], areq=areq)
+                    areq = json.loads(_info["authzreq"])
+                    sid = self.token_factory["code"].key(user=_info["uid"], areq=areq)
                     dic = _info
-                    dic['response_type'] = areq['response_type'].split(' ')
+                    dic["response_type"] = areq["response_type"].split(" ")
                 else:
                     try:
                         dic = self._db[sid]
@@ -681,9 +762,17 @@ class SessionDB(object):
                         self.access_token.invalidate(at)
             else:
                 raise ExpiredToken()
-        elif self.token_factory['refresh_token'].valid(rtoken):
-            sid = self.token_factory['refresh_token'].get_key(rtoken)
-            dic = self._db[sid]
+        elif self.token_factory["refresh_token"] is None:
+            raise WrongTokenType()
+        elif self.token_factory["refresh_token"].valid(rtoken):
+            if self.token_factory["refresh_token"].is_expired(rtoken):
+                raise ExpiredToken()
+            sid = self.token_factory["refresh_token"].get_key(rtoken)
+            try:
+                dic = self._db[sid]
+            except KeyError:
+                # Session is cleared, use the storage in token factory
+                dic = self.token_factory["refresh_token"].token_storage[sid]
             access_token = self.access_token(sid=sid, sinfo=dic)
 
             try:
@@ -699,24 +788,30 @@ class SessionDB(object):
             raise ExpiredToken()
 
         dic["access_token"] = access_token
-        dic["token_type"] = "Bearer"
+        dic["token_type"] = "Bearer"  # nosec
         dic["refresh_token"] = rtoken
+        dic["revoked"] = False
         self._db[sid] = dic
         return dic
 
     def is_valid(self, token, client_id=None):
         """
-        Checks validity of the given token
+        Check validity of the given token.
 
         :param token: Access or refresh token
         :param client_id: Client ID, needed only for Refresh token
         """
-        if token.startswith('Refresh_'):
+        if token.startswith("Refresh_"):
+            if self._refresh_db is None:
+                return False
             return self._refresh_db.verify_token(client_id, token)
 
         try:
             typ, sid = self._get_token_type_and_key(token)
         except KeyError:
+            return False
+
+        if self.is_revoked(sid):
             return False
 
         _dic = self._db[sid]
@@ -734,10 +829,14 @@ class SessionDB(object):
             if not self.access_token.valid(token):
                 return False
 
+        elif typ == "R":
+            if self.token_factory["refresh_token"] is None:
+                return False
+            if not self.token_factory["refresh_token"].valid(token):
+                return False
         return True
 
     def is_revoked(self, sid):
-        # typ, sid = self.access_token.type_and_key(token)
         try:
             return self[sid]["revoked"]
         except KeyError:
@@ -745,114 +844,105 @@ class SessionDB(object):
 
     def revoke_token(self, token):
         """
-        Revokes access token
+        Revoke access token.
 
         :param token: access token
         """
-        typ, sid = self._get_token_type_and_key(token)
-        _dict = self._db[sid]
+        _, sid = self._get_token_type_and_key(token)
 
-        if typ == "A":
-            _dict["code"] = ""
-        elif typ == "T":
-            _dict["access_token"] = ""
-        else:
-            pass
-        self._db[sid] = _dict
+        self.update(sid, "revoked", True)
         return True
 
     def revoke_refresh_token(self, rtoken):
         """
-        Revoke refresh token
+        Revoke refresh token.
 
         :param rtoken: Refresh token
         """
         if self._refresh_db:
             self._refresh_db.revoke_token(rtoken)
-        else:
-            self.token_factory['refresh_token'].invalidate(rtoken)
+        elif self.token_factory["refresh_token"] is not None:
+            self.token_factory["refresh_token"].invalidate(rtoken)
 
         return True
 
     def revoke_all_tokens(self, token):
         """
-        Mark session as revoked but also explicitly revoke refresh token
+        Mark session as revoked but also explicitly revoke refresh token.
 
         :param token: access token
         """
         _, sid = self._get_token_type_and_key(token)
 
         try:
-            rtoken = self._db[sid]['refresh_token']
+            rtoken = self._db[sid]["refresh_token"]
         except KeyError:
             pass
         else:
             self.revoke_refresh_token(rtoken)
 
-        self.update(sid, 'revoked', True)
+        self.revoke_token(token)
         return True
 
     def get_client_id_for_session(self, sid):
         _dict = self._db[sid]
         return _dict["client_id"]
 
-    def get_client_ids_for_uid(self, uid):
-        return [self.get_client_id_for_session(sid) for sid in
-                self.uid2sid[uid]]
+    def get_client_ids_for_uid(self, uid: str) -> List[str]:
+        """Return client_ids for a given uid."""
+        return self._db.get_client_ids_for_uid(uid)
 
-    def get_verified_Logout(self, uid):
-        _dict = self._db[self.uid2sid[uid]]
-        if "verified_logout" not in _dict:
-            return None
-        return _dict["verified_logout"]
+    def get_verify_logout(self, uid: str) -> Optional[str]:
+        """Return logout verification key for given uid."""
+        return self._db.get_verified_logout(uid)
 
-    def set_verify_logout(self, uid):
-        _dict = self._db[self.uid2sid[uid]]
-        _dict["verified_logout"] = uuid.uuid4().urn
+    def get_token_ids(self, uid: str) -> List[str]:
+        """Return id_tokens for given uid."""
+        return self._db.get_token_ids(uid)
 
-    def get_token_id(self, uid):
-        _dict = self._db[self.uid2sid[uid]]
-        return _dict["id_token"]
+    def set_verify_logout(self, uid: str) -> None:
+        """Save the key that is used for logout verification."""
+        for sid in self._db.get_by_uid(uid):
+            _dict = self._db[sid]
+            _dict["verified_logout"] = uuid.uuid4().urn
 
-    def is_revoke_uid(self, uid):
-        return self._db[self.uid2sid[uid]]["revoked"]
+    def is_revoke_uid(self, uid: str) -> bool:
+        """Return if the uid session has been revoked."""
+        return self._db.is_revoke_uid(uid)
 
-    def revoke_uid(self, uid):
-        self.update(self.uid2sid[uid], 'revoked', True)
-
-    def get_sids_from_uid(self, uid):
-        """
-        Returns list of identifiers for sessions that are connected to this
-        local identifier
-
-        :param uid: local identifier (username)
-        :return: list of session identifiers
-        """
-        return self.uid2sid[uid]
-
-    def get_sids_by_sub(self, sub):
-        sids = itertools.chain.from_iterable(self.uid2sid.values())
-        return [sid for sid in sids if self._db[sid]["sub"] == sub]
+    def revoke_uid(self, uid: str) -> None:
+        """Mark all sessions for the given uid as revoked."""
+        for sid in self._db.get_by_uid(uid):
+            self.update(sid, "revoked", True)
 
     def duplicate(self, sinfo):
         _dic = copy.copy(sinfo)
         areq = AuthorizationRequest().from_json(_dic["authzreq"])
-        sid = self.token_factory['code'].key(user=_dic["sub"], areq=areq)
+        sid = self.token_factory["code"].key(user=_dic["sub"], areq=areq)
 
-        _dic["code"] = self.token_factory['code'](sid=sid, sinfo=sinfo)
+        _dic["code"] = self.token_factory["code"](sid=sid, sinfo=sinfo)
         _dic["code_used"] = False
 
-        for key in ["access_token", "access_token_scope", "oauth_state",
-                    "token_type", "token_expires_at", "expires_in",
-                    "client_id_issued_at", "id_token", "oidreq",
-                    "refresh_token"]:
+        for key in [
+            "access_token",
+            "access_token_scope",
+            "oauth_state",
+            "token_type",
+            "token_expires_at",
+            "expires_in",
+            "client_id_issued_at",
+            "id_token",
+            "oidreq",
+            "refresh_token",
+        ]:
             try:
                 del _dic[key]
             except KeyError:
                 pass
 
         self._db[sid] = _dic
-        self.uid2sid[_dic["sub"]] = sid
+        self._db.update(sid, "sub", _dic["sub"])
+
         return sid
 
     def read(self, token):
@@ -862,3 +952,122 @@ class SessionDB(object):
             raise WrongTokenType("Not a grant token")
 
         return self._db[key]
+
+    def get_by_sub(self, sub: str) -> List[str]:
+        """Return session ids based on `sub` (external user identifier)."""
+        return self._db.get_by_sub(sub)
+
+    def make_smid(self, sid: str) -> str:
+        """
+        Create a session management ID.
+
+        :param sid:
+        :return: A session management ID
+        """
+        return hashlib.sha256(
+            "{}{}".format(sid, self.sm_salt).encode("utf-8")
+        ).hexdigest()
+
+    def get(self, attr: str, val: Any) -> List[str]:
+        """Return session ids based on attribute name and value."""
+        return self._db.get(attr, val)
+
+    def get_by_uid(self, uid: str) -> List[str]:
+        """Return session ids (keys) based on `uid` (internal user identifier)."""
+        return self._db.get_by_uid(uid)
+
+    def get_uid_by_sub(self, sub: str) -> str:
+        """Return session ids based on `sub` (external user identifier)."""
+        return self._db.get_uid_by_sub(sub)
+
+    def get_uid_by_sid(self, sub: str) -> str:
+        """Return User id based on sub."""
+        return self._db.get_uid_by_sid(sub)
+
+
+def session_get(db, attr, val):
+    """Return session ID based on attribute having value val."""
+    if isinstance(db, (SessionBackend, SessionDB)):
+        if attr == "uid":
+            return db.get_by_uid(val)
+        else:
+            return db.get(attr, val)
+    elif isinstance(db, dict):
+        warnings.warn(
+            "Using a regular dictionary is deprecated, please use `SessionDB` or `SessionBackend` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        if attr == "uid":
+            for _key, _val in db.items():
+                if _val["authn_event"]["uid"] == val:
+                    return _key
+        else:
+            for _key, _val in db.items():
+                if _val.get(attr) == val:
+                    return _key
+        return None
+    else:
+        raise ValueError("Unknown session database type")
+
+
+def session_extended_get(db, sub, attr, val):
+    """Return session ID based on subject_id and attribute attr having value val."""
+    if isinstance(db, (SessionBackend, SessionDB)):
+        for sid in db.get_by_sub(sub):
+            try:
+                if db[sid][attr] == val:
+                    return sid
+            except KeyError:
+                continue
+        return None
+    elif isinstance(db, dict):
+        warnings.warn(
+            "Using a regular dictionary is deprecated, please use `SessionDB` or `SessionBackend` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        for _key, _val in db.items():
+            try:
+                if _val["sub"] == sub and _val[attr] == val:
+                    return _key
+            except KeyError:
+                continue
+        return None
+    else:
+        raise ValueError("Unknown session database type")
+
+
+def session_set(db, attr, val):
+    if isinstance(db, SessionBackend):
+        db[attr] = val
+    elif isinstance(db, SessionDB):
+        db._db.set(attr, val)
+    elif isinstance(db, dict):
+        warnings.warn(
+            "Using a regular dictionary is deprecated, please use `SessionDB` or `SessionBackend` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        db[attr] = val
+    else:
+        raise ValueError("Unknown session database type")
+
+
+def session_update(db, key, attr, val):
+    if isinstance(db, SessionBackend):
+        db.update(key, attr, val)
+    elif isinstance(db, SessionDB):
+        db._db.update(key, attr, val)
+    elif isinstance(db, dict):
+        warnings.warn(
+            "Using a regular dictionary is deprecated, please use `SessionDB` or `SessionBackend` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        item = db[key]
+        item[attr] = val
+        db[key] = item
+    else:
+        raise ValueError("Unknown session database type")

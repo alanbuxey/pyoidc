@@ -1,5 +1,7 @@
 import logging
 import time
+from typing import Any  # noqa
+from typing import Dict  # noqa
 
 from oic.utils.authn.user import ToOld
 from oic.utils.http_util import CookieDealer
@@ -9,10 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 class AuthzHandling(CookieDealer):
-    """ Class that allow an entity to manage authorization """
+    """Class that allows an entity to manage authorization."""
 
     def __init__(self):
-        self.permdb = {}
+        self.permdb = {}  # type: Dict[str, Any]
 
     def __call__(self, *args, **kwargs):
         return ""
@@ -29,19 +31,21 @@ class AuthzHandling(CookieDealer):
             else:
                 uid, _ts, typ = val
 
-            if typ == "uam":  # shortlived
+            if typ == "uam":  # short lived
                 _now = int(time.time())
                 if _now > (int(_ts) + int(self.cookie_ttl * 60)):
                     logger.debug("Authentication timed out")
-                    raise ToOld("%d > (%d + %d)" % (_now, int(_ts),
-                                                    int(self.cookie_ttl * 60)))
+                    raise ToOld(
+                        "%d > (%d + %d)" % (_now, int(_ts), int(self.cookie_ttl * 60))
+                    )
             else:
                 if "max_age" in kwargs and kwargs["max_age"]:
                     _now = int(time.time())
                     if _now > (int(_ts) + int(kwargs["max_age"])):
                         logger.debug("Authentication too old")
-                        raise ToOld("%d > (%d + %d)" % (
-                            _now, int(_ts), int(kwargs["max_age"])))
+                        raise ToOld(
+                            "%d > (%d + %d)" % (_now, int(_ts), int(kwargs["max_age"]))
+                        )
 
             return self.permdb[uid]
 
